@@ -18,48 +18,90 @@ from sklearn.metrics import average_precision_score
 import pickle
 import keras
 from keras.models import load_model
-sys.path.append(r'C:\Users\aoara\OneDrive\Documents\repos\deepbeat')
-import utils
 from pathlib import Path
-from tensorflow.keras.optimizers import Adam
+from keras.optimizers import Adam
 from scipy.io import loadmat
 import copy
-import pickle  
 from datetime import datetime
 import json
+import argparse
+import tensorflow as tf
+from keras.callbacks import TensorBoard
+import pickle as pk
 
 
-def get_orig_deepbeat():
-    with h5.File(r"C:\Users\aoara\OneDrive\Documents\repos\deepbeat\deepbeat.h5", 'r') as f:
-    # Check for version attributes
-        # if 'keras_version' in f.attrs:
-        #     print(f"Keras version: {f.attrs['keras_version']}")
-        
-        # if 'backend' in f.attrs:
-        #     print(f"Backend: {f.attrs['backend']}")
-        
-        # # Sometimes stored under model config
-        # if 'model_config' in f.attrs:
-        #     import json
-        #     config = json.loads(f.attrs['model_config'])
-        #     if 'keras_version' in config:
-        #         print(f"Keras version (from config): {config['keras_version']}")
+
+def parser_args():
+    parser = argparse.ArgumentParser()
+
+    # repo and model path
+    parser.add_argument("--db_repo", default= r'C:\Users\aoara\develop\deepbeat')
+    parser.add_argument("--db_h5_file", default=r"C:\Users\aoara\develop\deepbeat\deepbeat.h5")
+    # data path
+    parser.add_argument("--orig_data_path", default= r'C:\Users\aoara\develop\deepbeat\data\original_data')
+    parser.add_argument("--relabled_path", default=r'C:\Users\aoara\develop\deepbeat\data\relabeled_data')  
     
+    # output path
+    parser.add_argument("--output_path", default= r'C:\Users\aoara\develop\deepbeat\training_output')
+
+    # experiment config
+    parser.add_argument("--file_name", required= True, help="name the file (model name)")
+    valid_choices = ['db_orig', 'db_relabel', 'db_relabel_w_vsm', 'db_orig_replaced', 'db_orig_replaced_vsm']
+    # db_relabel means remove all old data, keep relabel data ONLY
+    # db_orig_replaced means substitute old data with relabeled data, keep non-relabeled data as they are
+    parser.add_argument("--training_choice", choices= valid_choices, required= True, help="training data choice: " + str(valid_choices))
+    parser.add_argument("--db_orig_replaced_path", default= r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
+    
+    # hyperparameters
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--epochs", type=int, default=100)
+    
+
+    #optimizer
+    # parser.add_argument("--AdamW", action="store true", help= "use AdamW instead of default Adam optimizer")
+    # parser.add_argument("--weight_decay", type=float, default=5e-4, help= "weight decay with AdamW")
+
+    # specify type of relabeled data
+
+    
+    
+    args = parser.parse_args()
+
+    return args
+
+def setup_tensorboard(args):
+    log_path = Path(args.output_path) / Path(args.file_name)
+    log_path.mkdir(parents=True, exist_ok=True)
+    
+    tensorboard_callback = TensorBoard(
+        log_dir=str(log_path),
+        histogram_freq=1,  # Log weight histograms every epoch
+        write_graph=True,  # Visualize the graph
+        write_images=False,
+        update_freq='epoch',  # Log metrics every epoch
+        profile_batch=0,  # Disable profiling
+        embeddings_freq=0
+    )
+
+    return tensorboard_callback
+
+    
+    
+def get_orig_deepbeat(args):
+    with h5.File(args.db_h5_file, 'r') as f:    
         training_config = json.loads(f.attrs['training_config'])
         
     orig_config = training_config ['optimizer_config']['config']
-    orig_config['learning_rate'] = orig_config.pop('lr') # rename lr to learning rate
-    orig_config.pop('decay') # there is no longer a parameter called decay; the original decay was 0
+    orig_config['learning_rate'] = orig_config.pop('lr', None) # rename lr to learning rate
+    orig_config.pop('decay', None) # there is no longer a parameter called decay; the original decay was 0
 
     # load deepbeat model with new tensorflow package, verify performances
-    path_to_model =r'C:\Users\aoara\OneDrive\Documents\repos\deepbeat'
-    model_name = 'deepbeat.h5'
-    deepbeat = load_model( Path(path_to_model) / model_name, compile = False) 
+    deepbeat = load_model( args.db_h5_file, compile = False) 
     
     return deepbeat, orig_config
 
 
-def remove_nan_data( data_dict):
+def remove_nan_data(data_dict):
     # get non-nan signals
     no_nan_mask = ~np.isnan(data_dict['data']).any(axis=(1, 2))
     
@@ -86,14 +128,16 @@ def load_original_data(data_path, file_name):
     
     return output
 
-def load_from_mat(dir_path, file_name):
-    file_mat = loadmat(Path(dir_path) / file_name)
-    file = file_mat.get(file_name[:-4])
-    return file 
+
 
 def load_relabeled_data(data_path):
     # return combinbed, relabeled_db, relabeled_VSM
     #['data'], ['qa_label'], ['rhythm'], ['parameters'], ['ID']
+
+    def load_from_mat(dir_path, file_name):
+        file_mat = loadmat(Path(dir_path) / file_name)
+        file = file_mat.get(file_name[:-4])
+        return file 
     combined = {}
     combined['data'] = load_from_mat(data_path,'db_vsm_combined_data.mat' )
     combined['qa_label'] = load_from_mat(data_path, 'db_vsm_combined_label_q.mat' )
@@ -113,7 +157,7 @@ def load_relabeled_data(data_path):
     
     # VSM index starts from 1000
     db_mask = (combined['ID'] < 1000).flatten()
-    vsm_mask = (combined['ID']> 1000).flatten()
+    vsm_mask = (combined['ID']>=1000).flatten()
     # separate the db data
     relabeled_db['data'] = combined['data'][db_mask,:]
     relabeled_db['qa_label'] = combined['qa_label'][db_mask, :]
@@ -129,6 +173,9 @@ def load_relabeled_data(data_path):
 
 
 def replace_updated_subjects_db(db_train, relabeled_db):
+    """
+    for each relabeled subject, remove old data, and replace it with new data
+    """
     
     subjects_to_replace = np.unique(relabeled_db['ID'])
     mask_keep = ~np.isin(db_train['ID'], subjects_to_replace)
@@ -144,6 +191,16 @@ def replace_updated_subjects_db(db_train, relabeled_db):
     db_train['ID'] = np.concatenate([db_train['ID'], relabeled_db['ID']], axis=0)
      
     return db_train
+
+def load_substituted_relabeled_data(path):
+
+    """
+    load the saved substituted original data (keep un-relabel data)
+    """
+    with open(path, 'rb') as file:
+        orig_sub_relabel = pk.load(file)
+    
+    return orig_sub_relabel
 
 def attach_VSM (db_data, relabeled_vsm):
     db_data['data'] = np.concatenate([db_data['data'], relabeled_vsm['data']], axis=0)
@@ -167,36 +224,47 @@ def shuffle_data(db_train):
     return data_train, label_train_r, label_train_q
 
 def main():
+    # check gpu status
+
+    print("TENSORFLOW GPU STATUS")
+    print("="*60)
+    print(f"TensorFlow version: {tf.__version__}")
+    print(f"Built with CUDA: {tf.test.is_built_with_cuda()}")
+    print(f"GPU available: {tf.test.is_gpu_available()}")
+    gpus = tf.config.list_physical_devices('GPU')
+    print(f"Num GPUs available: {len(gpus)}")
+    if gpus:
+        for gpu in gpus:
+            print(f"  - {gpu}")
+    print("="*60 + "\n")
+
+    gpus = tf.config.list_physical_devices('GPU')
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+        
+    # seed everything
+    np.random.seed(42)
+    tf.random.set_seed(42)
     
-    file_name = input("name the file (model name): ").strip().lower()
+    # parse ags
+    args = parser_args()
+
     
-    training_choice = input("training data choice - db_orig, db_relabel, db_relabel_w_vsm").strip().lower()
-    
-    valid_choices = ['db_orig', 'db_relabel', 'db_relabel_w_vsm']
-    if training_choice not in valid_choices:
-        print(f"invalid choice. select from: {', '.join(valid_choices)}")
-        return
-    
-    
-    # load data
-    print("loading data")
-    orig_data_path = Path(r'C:\Users\aoara\OneDrive\Documents\repos\deepbeat\data')
-    #db_test = load_original_data(orig_data_path, 'test.npz')
-    db_train = load_original_data(orig_data_path, 'train.npz')
-    relabled_path = Path(r'C:\Users\aoara\OneDrive\Documents\repos\deepbeat\samiya\Model Development (AFib Detection)\Labelled Data\combined data (VSM+DeepBeat relabelled)')
-    relabeled_combined, relabeled_db, relabeled_vsm = load_relabeled_data(relabled_path)
-    # merged old data with relabeled data
-    db_train_copy = copy.deepcopy(db_train)
-    db_train_update = replace_updated_subjects_db(db_train_copy, relabeled_db)
-    db_VSM_train = attach_VSM(db_train_update, relabeled_vsm)
-    print("finished processing data")
     # load model
-    db_trained, orig_config = get_orig_deepbeat()
+    db_trained, orig_config = get_orig_deepbeat(args)
     
     # clone model  (new, does not preserve old weights)
     new_db = keras.models.clone_model(db_trained)
+
+    # optimizer config
+    # if args.AdamW:
+    #     optimizer = AdamW(weight_decay= args.weight_decay)
+    # else:
+    #     optimizer = Adam( **orig_config)
+
+    optimizer = Adam( **orig_config)
     new_db.compile(
-        optimizer= Adam( **orig_config),
+        optimizer= optimizer,
         loss={
             'qa_output': 'categorical_crossentropy',
             'rhythm_output': 'binary_crossentropy' 
@@ -206,44 +274,81 @@ def main():
             'rhythm_output': 5.0   
         },
         metrics={'rhythm_output': 'accuracy', 'qa_output': 'accuracy'})
-    
+
     # Samiya's loss
     # .compile(optimizer=tf.keras.optimizers.Adam(),
     #           loss={'rhythm_output': BinaryFocalLoss(gamma=2), 'qa_output': 'categorical_crossentropy'},
     #           loss_weights={'rhythm_output': 1, 'qa_output': 1},
     #           metrics={'rhythm_output': 'accuracy', 'qa_output': 'accuracy'})
     
-    training_type_dict = {'db_orig': db_train, 
-                          'db_relabel': db_train_update,
-                          'db_relabel_w_vsm': db_VSM_train}
-    
-    data_to_shuffle = training_type_dict[training_choice]
-    
-    print("training starts")
-    
-    
+    #prepare training data
+    # load data
+    print("loading training data")
+
+
+    def load_training_data(args):
+        print("="*60)
+        print("TRAINING CHOICE" + str(args.training_choice))
+        print("="*60)
+        if args.training_choice == "db_orig_replaced" or args.training_choice == "db_orig_replaced_w_vsm" :
+            data_to_shuffle = load_substituted_relabeled_data(args.db_orig_replaced_path)
+            # if args.training_choice == "db_orig_replaced_w_vsm":
+            #     _, _, relabeled_vsm = load_relabeled_data(args.relabled_path)
+            #     db_VSM_train = attach_VSM( data_to_shuffle, relabeled_vsm)
+            #     return db_VSM_train
+                
+        elif args.training_choice == "db_orig":
+            data_to_shuffle = load_original_data(args.orig_data_path, 'train.npz')
+      
+        elif args.training_choice == "db_relabel" or args.training_choice == "db_relabel_w_vsm":
+            db_train = load_original_data(args.orig_data_path, 'train.npz')
+            _, relabeled_db, relabeled_vsm = load_relabeled_data(args.relabled_path)
+            db_train_update = replace_updated_subjects_db(db_train, relabeled_db)
+            data_to_shuffle = db_train_update
+            if args.training_choice == "db_relabel_w_vsm":
+                db_VSM_train = attach_VSM( db_train_update, relabeled_vsm)
+                return db_VSM_train   
+            
+        return data_to_shuffle
+
+    data_to_shuffle = load_training_data(args)
+
     data_train, label_train_r, label_train_q = shuffle_data(data_to_shuffle)
     
-    batch_size = 128
-    epochs = 100
-    # Train Model
-    history = new_db.fit(data_train, {"rhythm_output": label_train_r, "qa_output": label_train_q},
-            batch_size=batch_size,
-            epochs=epochs,
-            verbose=1)
+    
+    # perpare validation data
+    #db_val = load_original_data(args.orig_data_path, 'validate.npz')
+    #data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
+    
+    print("training starts")
+
+    tensorboard_callback = setup_tensorboard(args)
+    history = new_db.fit(
+        data_train, 
+        {"rhythm_output": label_train_r, "qa_output": label_train_q},
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        #validation_data=(data_val, {"rhythm_output": label_val_r, "qa_output": label_val_q}),
+        callbacks=[tensorboard_callback],
+        verbose=1
+    )
     # save model and history
     print("saving trained model and history")
-    output_path = Path(r'C:\Users\aoara\OneDrive\Documents\repos\deepbeat\new_models')
+    output_path = Path(args.output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    new_db.save(output_path / (file_name + '.keras'))
+
+    model_dir = output_path / Path(args.file_name)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    new_db.save( model_dir  / (args.file_name + '.keras'))
     
-    all_history = {'model_name': file_name+'.keras',
-                   'training_data': training_choice,
-                   'date': datetime.now(),
+    all_history = {'model_name': args.file_name+'.keras',
+                   'training_data': args.training_choice,
+                   'date': datetime.now().isoformat(),
                    'history': history.history
                    }
  
-    with open(output_path / (file_name + '_history.pkl'), 'wb') as file:
+    with open( model_dir /(args.file_name + '_history.pkl'), 'wb') as file:
         pickle.dump(all_history, file)
         
 
