@@ -51,11 +51,7 @@ class DeepBeatDataset(Dataset):
 
 def parser_args():
     parser = argparse.ArgumentParser()
-
-    # repo and model path
-    parser.add_argument("--db_repo", default=r'C:\Users\aoara\develop\deepbeat')
-    parser.add_argument("--db_h5_file", default=r"C:\Users\aoara\develop\deepbeat\deepbeat.h5")
-    
+  
     # data path
     parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
     parser.add_argument("--relabled_path", default=r'C:\Users\aoara\develop\deepbeat\data\relabeled_data')
