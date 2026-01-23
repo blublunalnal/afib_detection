@@ -140,12 +140,12 @@ class DeepBeatModel(nn.Module):
         qa_branch = self.bn5_qa(qa_branch)
         qa_branch = self.dropout4_qa(qa_branch)
         qa_branch = qa_branch.flatten(1)  # Flatten
-        if not hasattr(self, '_printed_shapes'):
-            print(f"QA Flattened Size: {qa_branch.flatten(1).shape[1]}")
-            print(f"Rhythm Flattened Size: {rhythm_branch.flatten(1).shape[1]}")
-            setattr(self, '_printed_shapes', True)
         qa_branch = F.relu(self.fc1_qa(qa_branch))
         qa_out = F.softmax(self.qa_output(qa_branch), dim=1)
+        # if not hasattr(self, '_printed_shapes'):
+        #     print(f"QA Flattened Size: {qa_branch.flatten(1).shape[1]}")
+        #     print(f"Rhythm Flattened Size: {rhythm_branch.flatten(1).shape[1]}")
+        #     setattr(self, '_printed_shapes', True)
         
         # Branch for rhythm output
         rhythm_branch = F.relu(self.conv8_rhythm(x))
