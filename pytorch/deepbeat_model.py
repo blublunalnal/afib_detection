@@ -34,13 +34,13 @@ class DeepBeatModel(nn.Module):
         
         # Deeper conv layers with regularization
         self.conv4 = nn.Conv1d(in_channels=50, out_channels=64, kernel_size=4, 
-                               stride=3, padding='same')
+                               stride=3, padding=1)
         self.leaky_relu1 = nn.LeakyReLU(negative_slope=0.1)
         self.bn2 = nn.BatchNorm1d(64, momentum=0.01)
         self.dropout1 = nn.Dropout(p=0.11824940188979882)
         
         self.conv5 = nn.Conv1d(in_channels=64, out_channels=35, kernel_size=4, 
-                               stride=3, padding='same')
+                               stride=3, padding=1)
         self.leaky_relu2 = nn.LeakyReLU(negative_slope=0.1)
         self.bn3 = nn.BatchNorm1d(35, momentum=0.01)
         self.dropout2 = nn.Dropout(p=0.5449968090097298)
@@ -53,18 +53,18 @@ class DeepBeatModel(nn.Module):
         
         # Branch 1 (for QA output)
         self.conv7_qa = nn.Conv1d(in_channels=64, out_channels=25, kernel_size=4, 
-                                   stride=2, padding='same')
+                                   stride=2, padding=1)
         self.bn5_qa = nn.BatchNorm1d(25, momentum=0.01)
         self.dropout4_qa = nn.Dropout(p=0.6717685126227927)
         
         # Branch 2 (for rhythm output)
         self.conv8_rhythm = nn.Conv1d(in_channels=64, out_channels=35, kernel_size=5, 
-                                       stride=3, padding='same')
+                                       stride=3, padding=2)
         self.bn6_rhythm = nn.BatchNorm1d(35, momentum=0.01)
         self.dropout5_rhythm = nn.Dropout(p=0.3737667081555568)
         
         self.conv9_rhythm = nn.Conv1d(in_channels=35, out_channels=25, kernel_size=4, 
-                                       stride=3, padding='same')
+                                       stride=3, padding=1)
         self.bn7_rhythm = nn.BatchNorm1d(25, momentum=0.01)
         self.dropout6_rhythm = nn.Dropout(p=0.4138296544325403)
         
