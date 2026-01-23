@@ -281,16 +281,16 @@ def compute_loss(model, outputs, targets, device, qa_weight=0.2, rhythm_weight=5
     return total_loss, qa_loss, rhythm_loss
 
 
-def compute_accuracy(outputs, targets):
+def compute_accuracy(outputs, targets, device):
     """Compute accuracy for both outputs"""
     # QA accuracy
-    qa_pred = torch.argmax(outputs['qa_output'], dim=1)
-    qa_true = torch.argmax(targets['qa_label'], dim=1)
+    qa_pred = torch.argmax(outputs['qa_output'].to(device), dim=1)
+    qa_true = torch.argmax(targets['qa_label'].to(device), dim=1)
     qa_acc = (qa_pred == qa_true).float().mean()
     
     # Rhythm accuracy
-    rhythm_pred = torch.argmax(outputs['rhythm_output'], dim=1)
-    rhythm_true = torch.argmax(targets['rhythm_label'], dim=1)
+    rhythm_pred = torch.argmax(outputs['rhythm_output'].to(device), dim=1)
+    rhythm_true = torch.argmax(targets['rhythm_label'].to(device), dim=1)
     rhythm_acc = (rhythm_pred == rhythm_true).float().mean()
     
     return qa_acc.item(), rhythm_acc.item()
@@ -324,7 +324,7 @@ def train_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_w
         optimizer.step()
         
         # Compute accuracy
-        qa_acc, rhythm_acc = compute_accuracy(outputs, batch)
+        qa_acc, rhythm_acc = compute_accuracy(outputs, batch, device)
         
         # Accumulate metrics
         total_loss += loss.item()
@@ -372,7 +372,7 @@ def validate_epoch(model, dataloader, device, qa_weight, rhythm_weight):
             loss, qa_loss, rhythm_loss = compute_loss(model, outputs, batch, device, qa_weight, rhythm_weight)
             
             # Compute accuracy
-            qa_acc, rhythm_acc = compute_accuracy(outputs, batch)
+            qa_acc, rhythm_acc = compute_accuracy(outputs, batch, device)
             
             # Accumulate metrics
             total_loss += loss.item()
