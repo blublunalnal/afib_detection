@@ -465,7 +465,11 @@ def main():
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters\n")
     
     # Create optimizer (using original config from Keras model)
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    if args.training_choice == 'db_orig':
+         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-07)
+    else:
+        
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     
     # Setup TensorBoard
     writer = setup_tensorboard(args)
