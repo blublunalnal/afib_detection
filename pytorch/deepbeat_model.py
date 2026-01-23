@@ -76,7 +76,7 @@ class DeepBeatModel(nn.Module):
         # Fully connected layers (need to calculate input size based on conv output)
         # After all convolutions, we need to flatten and pass through FC layers
         self.fc1_qa = nn.Linear(50, 175)  #
-        self.fc2_rhythm = nn.Linear(70, 175)  # 
+        self.fc2_rhythm = nn.Linear(35, 175)  # 
         
         # Output layers
         self.qa_output = nn.Linear(175, 3)
@@ -140,6 +140,10 @@ class DeepBeatModel(nn.Module):
         qa_branch = self.bn5_qa(qa_branch)
         qa_branch = self.dropout4_qa(qa_branch)
         qa_branch = qa_branch.flatten(1)  # Flatten
+        if not hasattr(self, '_printed_shapes'):
+            print(f"QA Flattened Size: {qa_branch.flatten(1).shape[1]}")
+            print(f"Rhythm Flattened Size: {rhythm_branch.flatten(1).shape[1]}")
+            setattr(self, '_printed_shapes', True)
         qa_branch = F.relu(self.fc1_qa(qa_branch))
         qa_out = F.softmax(self.qa_output(qa_branch), dim=1)
         
