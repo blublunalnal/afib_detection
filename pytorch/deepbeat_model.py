@@ -75,8 +75,8 @@ class DeepBeatModel(nn.Module):
         
         # Fully connected layers (need to calculate input size based on conv output)
         # After all convolutions, we need to flatten and pass through FC layers
-        self.fc1_qa = nn.Linear(375, 175)  # 25 * 15 = 375 (calculated from conv output)
-        self.fc2_rhythm = nn.Linear(350, 175)  # 35 * 10 = 350 (calculated from conv output)
+        self.fc1_qa = nn.Linear(50, 175)  #
+        self.fc2_rhythm = nn.Linear(70, 175)  # 
         
         # Output layers
         self.qa_output = nn.Linear(175, 3)
