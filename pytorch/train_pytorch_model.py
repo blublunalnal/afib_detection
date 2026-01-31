@@ -71,6 +71,7 @@ def parser_args():
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--learning_rate", type=float, default=0.001)
+    parser.add_argument("--weight_decay", type=float, default=0.01,help="Weight decay (L2 regularization)")
     
     # loss weights for multi-task learning
     parser.add_argument("--qa_loss_weight", type=float, default=0.2,
@@ -81,6 +82,7 @@ def parser_args():
     # device
     parser.add_argument("--device", type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument("--num_workers", type=int, default=4)
+    
     
     args = parser.parse_args()
     return args
@@ -272,11 +274,11 @@ def compute_loss(model, outputs, targets, device, qa_weight=0.2, rhythm_weight=5
     # Binary cross-entropy for rhythm (2 classes) 
     rhythm_loss = nn.BCELoss()(outputs['rhythm_output'], rhythm_target)
     
-    # Add L2 regularization
-    l2_reg = model.get_l2_regularization()
+    # # Add L2 regularization from keras model
+    # l2_reg = model.get_l2_regularization() 
     
     # Weighted loss
-    total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss + l2_reg
+    total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss 
     
     return total_loss, qa_loss, rhythm_loss
 
@@ -464,12 +466,12 @@ def main():
     model = DeepBeatModel().to(device)
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters\n")
     
-    # Create optimizer (using original config from Keras model)
-    if args.training_choice == 'db_orig':
-         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-07)
-    else:
+    # # Create optimizer (using original config from Keras model)
+    # if args.training_choice == 'db_orig':
+    #      optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-07)
+    # else:
         
-        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # Setup TensorBoard
     writer = setup_tensorboard(args)
@@ -493,6 +495,10 @@ def main():
     print("=" * 60)
     print(f"Loss weights - QA: {args.qa_loss_weight}, Rhythm: {args.rhythm_loss_weight}")
     print("=" * 60)
+    
+    # Track best model based on validation rhythm accuracy
+    best_val_rhythm_acc = 0.0
+    best_epoch = 0
     
     for epoch in range(args.epochs):
         # Train
@@ -528,6 +534,29 @@ def main():
         writer.add_scalar('Rhythm_Accuracy/train', train_metrics['rhythm_accuracy'], epoch)
         writer.add_scalar('Rhythm_Accuracy/val', val_metrics['rhythm_accuracy'], epoch)
         
+        # Check if this is the best model (based on validation rhythm accuracy)
+        if val_metrics['rhythm_accuracy'] > best_val_rhythm_acc:
+            best_val_rhythm_acc = val_metrics['rhythm_accuracy']
+            best_epoch = epoch + 1
+            
+            # Save best model checkpoint
+            output_path = Path(args.output_path)
+            output_path.mkdir(parents=True, exist_ok=True)
+            model_dir = output_path / Path(args.file_name)
+            model_dir.mkdir(parents=True, exist_ok=True)
+            
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_rhythm_accuracy': val_metrics['rhythm_accuracy'],
+                'val_qa_accuracy': val_metrics['qa_accuracy'],
+                'val_loss': val_metrics['loss'],
+                'history_up_to_best': {k: v[:epoch+1] for k, v in history.items()}
+            }, model_dir / f"{args.file_name}_best.pth")
+            
+            print(f"  ⭐ New best model! Rhythm Val Acc: {val_metrics['rhythm_accuracy']:.4f}")
+        
         # Print progress
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"  Train - Loss: {train_metrics['loss']:.4f}, "
@@ -538,23 +567,38 @@ def main():
               f"Rhythm Acc: {val_metrics['rhythm_accuracy']:.4f}")
     
     print("=" * 60)
-    print("Training complete!\n")
+    print("Training complete!")
+    print(f"Best model: Epoch {best_epoch}, Rhythm Val Acc: {best_val_rhythm_acc:.4f}")
+    print("=" * 60)
+    print()
     
-    # Save model and history
-    print("Saving model and history...")
+    # Save final model and history
+    print("Saving final model and history...")
     output_path = Path(args.output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     
     model_dir = output_path / Path(args.file_name)
     model_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save PyTorch model
+    # Save PyTorch final model
     torch.save({
         'epoch': args.epochs,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'history': history
-    }, model_dir / (args.file_name + '.pth'))
+        'history': history,
+        'best_epoch': best_epoch,
+        'best_val_rhythm_acc': best_val_rhythm_acc
+    }, model_dir / f"{args.file_name}_final.pth")
+    
+    # Also save as the default name for compatibility
+    torch.save({
+        'epoch': args.epochs,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'history': history,
+        'best_epoch': best_epoch,
+        'best_val_rhythm_acc': best_val_rhythm_acc
+    }, model_dir / f"{args.file_name}.pth")
     
     # Save history separately
     all_history = {
@@ -570,7 +614,13 @@ def main():
         pickle.dump(all_history, file)
     
     writer.close()
-    print(f"Model and history saved to {model_dir}")
+    print(f"\nModels saved to {model_dir}:")
+    print(f"  - {args.file_name}_best.pth (epoch {best_epoch}, rhythm acc: {best_val_rhythm_acc:.4f})")
+    print(f"  - {args.file_name}_final.pth (epoch {args.epochs})")
+    print(f"  - {args.file_name}.pth (same as final, for compatibility)")
+    print(f"  - {args.file_name}_history.pkl (training history)")
+    print("\n✅ Recommendation: Use '_best.pth' for inference (best validation performance)")
+
 
 
 if __name__ == "__main__":
