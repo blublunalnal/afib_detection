@@ -82,16 +82,16 @@ class DeepBeatModel(nn.Module):
         self.qa_output = nn.Linear(175, 3)
         self.rhythm_output = nn.Linear(175, 2)
         
-        # L2 regularization weights (stored for manual regularization in training)
-        self.l2_weights = {
-            'conv4': 0.044189151376485825,
-            'conv5': 0.04586048796772957,
-            'conv6': 0.011329331435263157,
-            'conv7_qa': 0.03589663654565811,
-            'conv8_rhythm': 0.04263903945684433,
-            'conv9_rhythm': 0.041482653468847275,
-            'conv10_rhythm': 0.03098524734377861
-        }
+        # L2 regularization weights (from original keras model)
+        # self.l2_weights = {
+        #     'conv4': 0.044189151376485825,
+        #     'conv5': 0.04586048796772957,
+        #     'conv6': 0.011329331435263157,
+        #     'conv7_qa': 0.03589663654565811,
+        #     'conv8_rhythm': 0.04263903945684433,
+        #     'conv9_rhythm': 0.041482653468847275,
+        #     'conv10_rhythm': 0.03098524734377861
+        # }
         
     def forward(self, x):
         """
@@ -168,37 +168,38 @@ class DeepBeatModel(nn.Module):
             'rhythm_output': rhythm_out
         }
     
-    def get_l2_regularization(self):
-        """
-        Calculate L2 regularization loss for specified layers.
+    # calculate l2 weights (from the original keras model)
+    # def get_l2_regularization(self):
+    #     """
+    #     Calculate L2 regularization loss for specified layers.
         
-        Returns:
-            L2 regularization loss
-        """
-        l2_reg = 0.0
+    #     Returns:
+    #         L2 regularization loss
+    #     """
+    #     l2_reg = 0.0
         
-        # Add L2 regularization for conv4
-        l2_reg += self.l2_weights['conv4'] * torch.sum(self.conv4.weight ** 2)
+    #     # Add L2 regularization for conv4
+    #     l2_reg += self.l2_weights['conv4'] * torch.sum(self.conv4.weight ** 2)
         
-        # Add L2 regularization for conv5
-        l2_reg += self.l2_weights['conv5'] * torch.sum(self.conv5.weight ** 2)
+    #     # Add L2 regularization for conv5
+    #     l2_reg += self.l2_weights['conv5'] * torch.sum(self.conv5.weight ** 2)
         
-        # Add L2 regularization for conv6
-        l2_reg += self.l2_weights['conv6'] * torch.sum(self.conv6.weight ** 2)
+    #     # Add L2 regularization for conv6
+    #     l2_reg += self.l2_weights['conv6'] * torch.sum(self.conv6.weight ** 2)
         
-        # Add L2 regularization for conv7_qa
-        l2_reg += self.l2_weights['conv7_qa'] * torch.sum(self.conv7_qa.weight ** 2)
+    #     # Add L2 regularization for conv7_qa
+    #     l2_reg += self.l2_weights['conv7_qa'] * torch.sum(self.conv7_qa.weight ** 2)
         
-        # Add L2 regularization for conv8_rhythm
-        l2_reg += self.l2_weights['conv8_rhythm'] * torch.sum(self.conv8_rhythm.weight ** 2)
+    #     # Add L2 regularization for conv8_rhythm
+    #     l2_reg += self.l2_weights['conv8_rhythm'] * torch.sum(self.conv8_rhythm.weight ** 2)
         
-        # Add L2 regularization for conv9_rhythm
-        l2_reg += self.l2_weights['conv9_rhythm'] * torch.sum(self.conv9_rhythm.weight ** 2)
+    #     # Add L2 regularization for conv9_rhythm
+    #     l2_reg += self.l2_weights['conv9_rhythm'] * torch.sum(self.conv9_rhythm.weight ** 2)
         
-        # Add L2 regularization for conv10_rhythm
-        l2_reg += self.l2_weights['conv10_rhythm'] * torch.sum(self.conv10_rhythm.weight ** 2)
+    #     # Add L2 regularization for conv10_rhythm
+    #     l2_reg += self.l2_weights['conv10_rhythm'] * torch.sum(self.conv10_rhythm.weight ** 2)
         
-        return l2_reg
+    #     return l2_reg
 
 
 def test_model():
