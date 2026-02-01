@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 from scipy.io import loadmat
 
+# Add tqdm for progress bars
+from tqdm import tqdm 
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -26,12 +29,6 @@ class DeepBeatDataset(Dataset):
     """PyTorch Dataset for DeepBeat data"""
     
     def __init__(self, data, qa_labels, rhythm_labels):
-        """
-        Args:
-            data: Signal data (N, 800, 1)
-            qa_labels: QA labels one-hot encoded (N, 3)
-            rhythm_labels: Rhythm labels one-hot encoded (N, 2)
-        """
         # CRITICAL FIX: PyTorch Conv1d needs (Batch, Channels, Length)
         # Input is (N, 800, 1) -> Permute to (N, 1, 800)
         self.data = torch.FloatTensor(data).permute(0, 2, 1)
@@ -206,8 +203,10 @@ def compute_accuracy(qa_logits, rhythm_logits, targets, device):
 def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, is_training=True):
     if is_training:
         model.train()
+        desc_str = f"Epoch {epoch} [TRAIN]"
     else:
         model.eval()
+        desc_str = f"Epoch {epoch} [VAL]  "
         
     metrics = {
         'loss': 0.0, 'qa_loss': 0.0, 'rhythm_loss': 0.0,
@@ -216,15 +215,18 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     
     num_batches = 0
     
-    # Use torch.set_grad_enabled to handle train/eval modes conveniently
+    # --- ADDED: TQDM Progress Bar ---
+    # Wrap the dataloader with tqdm
+    pbar = tqdm(dataloader, desc=desc_str, leave=True, ncols=120)
+    
     with torch.set_grad_enabled(is_training):
-        for batch in dataloader:
+        for batch in pbar:
             data = batch['data'].to(device)
             
             if is_training:
                 optimizer.zero_grad()
             
-            # Forward pass: Unpack tuple (qa, rhythm)
+            # Forward pass
             qa_logits, rhythm_logits = model(data)
             
             # Compute loss
@@ -239,15 +241,24 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             # Compute accuracy
             qa_acc, rhythm_acc = compute_accuracy(qa_logits, rhythm_logits, batch, device)
             
+            # Update metrics
             metrics['loss'] += loss.item()
             metrics['qa_loss'] += qa_loss.item()
             metrics['rhythm_loss'] += rhythm_loss.item()
             metrics['qa_acc'] += qa_acc
             metrics['rhythm_acc'] += rhythm_acc
             num_batches += 1
+            
+            # --- ADDED: Update progress bar description with live metrics ---
+            pbar.set_postfix({
+                'Loss': f"{loss.item():.4f}", 
+                'QA_Acc': f"{qa_acc:.2f}", 
+                'Rh_Acc': f"{rhythm_acc:.2f}"
+            })
     
     # Average metrics
-    return {k: v / num_batches for k, v in metrics.items()}
+    avg_metrics = {k: v / num_batches for k, v in metrics.items()}
+    return avg_metrics
 
 def setup_tensorboard(args):
     log_path = Path(args.output_path) / Path(args.file_name)
@@ -309,6 +320,7 @@ def main():
     train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
     val_dataset = DeepBeatDataset(data_val, label_val_q, label_val_r)
     
+    # NOTE: Set num_workers=0 on Windows if you get multiprocessing errors
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
                               num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, 
@@ -328,7 +340,7 @@ def main():
     best_epoch = 0
     
     print("Starting training...")
-    for epoch in range(args.epochs):
+    for epoch in range(1, args.epochs + 1):
         # Train
         train_m = run_epoch(model, train_loader, optimizer, device, epoch, 
                             args.qa_loss_weight, args.rhythm_loss_weight, is_training=True)
@@ -347,24 +359,25 @@ def main():
         history['val_rhythm_acc'].append(val_m['rhythm_acc'])
         history['val_qa_acc'].append(val_m['qa_acc'])
         
+        # Print summary of epoch
+        print(f"   -> Avg Val Rh Acc: {val_m['rhythm_acc']:.4f} | Avg Val Loss: {val_m['loss']:.4f}")
+        
         # Save Best
         if val_m['rhythm_acc'] > best_val_rhythm_acc:
             best_val_rhythm_acc = val_m['rhythm_acc']
-            best_epoch = epoch + 1
+            best_epoch = epoch
             
             output_path = Path(args.output_path) / args.file_name
             output_path.mkdir(parents=True, exist_ok=True)
             
             torch.save({
-                'epoch': epoch + 1,
+                'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_metrics': val_m
             }, output_path / f"{args.file_name}_best.pth")
             
-            print(f"Epoch {epoch+1}: New Best Rhythm Acc: {best_val_rhythm_acc:.4f}")
-        else:
-            print(f"Epoch {epoch+1}: Train Loss {train_m['loss']:.4f} | Val Loss {val_m['loss']:.4f} | Val Rhythm Acc {val_m['rhythm_acc']:.4f}")
+            print(f"   ⭐ New Best Model Saved!")
 
     # Save Final
     output_path = Path(args.output_path) / args.file_name
