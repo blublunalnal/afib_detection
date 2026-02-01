@@ -12,7 +12,6 @@ from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
-import h5py as h5
 from scipy.io import loadmat
 
 import torch
@@ -21,8 +20,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from deepbeat_model import DeepBeatModel
-
+from deepbeat_model import DeepBeatModel 
 
 class DeepBeatDataset(Dataset):
     """PyTorch Dataset for DeepBeat data"""
@@ -34,7 +32,9 @@ class DeepBeatDataset(Dataset):
             qa_labels: QA labels one-hot encoded (N, 3)
             rhythm_labels: Rhythm labels one-hot encoded (N, 2)
         """
-        self.data = torch.FloatTensor(data)
+        # CRITICAL FIX: PyTorch Conv1d needs (Batch, Channels, Length)
+        # Input is (N, 800, 1) -> Permute to (N, 1, 800)
+        self.data = torch.FloatTensor(data).permute(0, 2, 1)
         self.qa_labels = torch.FloatTensor(qa_labels)
         self.rhythm_labels = torch.FloatTensor(rhythm_labels)
         
@@ -48,67 +48,16 @@ class DeepBeatDataset(Dataset):
             'rhythm_label': self.rhythm_labels[idx]
         }
 
-
-def parser_args():
-    parser = argparse.ArgumentParser()
-  
-    # data path
-    parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
-    parser.add_argument("--relabled_path", default=r'C:\Users\aoara\develop\deepbeat\data\relabeled_data')
-    
-    # output path
-    parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\training_output')
-
-    # experiment config
-    parser.add_argument("--file_name", required=True, help="name the file (model name)")
-    valid_choices = ['db_orig', 'db_relabel', 'db_relabel_w_vsm', 'db_orig_replaced', 'db_orig_replaced_vsm']
-    parser.add_argument("--training_choice", choices=valid_choices, required=True, 
-                       help="training data choice: " + str(valid_choices))
-    parser.add_argument("--db_orig_replaced_path", 
-                       default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
-    
-    # hyperparameters
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--learning_rate", type=float, default=0.001)
-    parser.add_argument("--weight_decay", type=float, default=0.01,help="Weight decay (L2 regularization)")
-    
-    # loss weights for multi-task learning
-    parser.add_argument("--qa_loss_weight", type=float, default=0.2,
-                       help="Weight for QA (quality assessment) loss (default: 0.2)")
-    parser.add_argument("--rhythm_loss_weight", type=float, default=5.0,
-                       help="Weight for rhythm classification loss (default: 5.0)")
-    
-    # device
-    parser.add_argument("--device", type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument("--num_workers", type=int, default=4)
-    
-    
-    args = parser.parse_args()
-    return args
-
-
-def setup_tensorboard(args):
-    """Setup TensorBoard logging"""
-    log_path = Path(args.output_path) / Path(args.file_name)
-    log_path.mkdir(parents=True, exist_ok=True)
-    
-    writer = SummaryWriter(log_dir=str(log_path))
-    return writer
-
+# --- Data Loading Utilities (Kept from original) ---
 
 def remove_nan_data(data_dict):
     """Remove samples containing NaN values"""
     no_nan_mask = ~np.isnan(data_dict['data']).any(axis=(1, 2))
-    
     for k in data_dict.keys():
         data_dict[k] = data_dict[k][no_nan_mask]
-    
     return data_dict
 
-
 def load_original_data(data_path, file_name):
-    """Load original training/validation data"""
     data = np.load(Path(data_path) / file_name, allow_pickle=True)
     output = {}
     output['data'] = data['signal']
@@ -118,31 +67,21 @@ def load_original_data(data_path, file_name):
     params = pd.DataFrame(data['parameters'])
     params.rename(index=str, columns={0: 'timestamp', 1: 'stream', 2: 'ID'}, inplace=True)
     output['ID'] = np.array(params['ID'].to_list())
-    
-    # Remove NaN data
     output = remove_nan_data(output)
-    
     return output
 
-
 def load_relabeled_data(data_path):
-    """Load relabeled data from MATLAB files"""
-    
     def load_from_mat(dir_path, file_name):
         file_mat = loadmat(Path(dir_path) / file_name)
-        file = file_mat.get(file_name[:-4])
-        return file
+        return file_mat.get(file_name[:-4])
     
     combined = {}
     combined['data'] = load_from_mat(data_path, 'db_vsm_combined_data.mat')
     combined['qa_label'] = load_from_mat(data_path, 'db_vsm_combined_label_q.mat')
     combined['rhythm'] = load_from_mat(data_path, 'db_vsm_combined_label_r.mat')
     combined['ID'] = load_from_mat(data_path, 'db_vsm_combined_sub_id.mat').flatten()
-    
-    # Reshape to match original data format
     combined['data'] = combined['data'].reshape(combined['data'].shape[0], combined['data'].shape[1], 1)
     
-    # One-hot encoding
     num_classes_rhythm = 2
     num_classes_qa = 3
     combined['rhythm'] = np.eye(num_classes_rhythm)[combined['rhythm'].flatten().astype(int)]
@@ -150,18 +89,14 @@ def load_relabeled_data(data_path):
     
     relabeled_db = {}
     relabeled_vsm = {}
-    
-    # VSM index starts from 1000
     db_mask = (combined['ID'] < 1000).flatten()
     vsm_mask = (combined['ID'] >= 1000).flatten()
     
-    # Separate DB data
     relabeled_db['data'] = combined['data'][db_mask, :]
     relabeled_db['qa_label'] = combined['qa_label'][db_mask, :]
     relabeled_db['rhythm'] = combined['rhythm'][db_mask, :]
     relabeled_db['ID'] = combined['ID'][db_mask].flatten()
     
-    # Separate VSM data
     relabeled_vsm['data'] = combined['data'][vsm_mask, :]
     relabeled_vsm['qa_label'] = combined['qa_label'][vsm_mask, :]
     relabeled_vsm['rhythm'] = combined['rhythm'][vsm_mask, :]
@@ -169,9 +104,7 @@ def load_relabeled_data(data_path):
     
     return combined, relabeled_db, relabeled_vsm
 
-
 def replace_updated_subjects_db(db_train, relabeled_db):
-    """Replace old data with relabeled data for specific subjects"""
     subjects_to_replace = np.unique(relabeled_db['ID'])
     mask_keep = ~np.isin(db_train['ID'], subjects_to_replace)
     
@@ -184,28 +117,20 @@ def replace_updated_subjects_db(db_train, relabeled_db):
     db_train['rhythm'] = np.concatenate([db_train['rhythm'], relabeled_db['rhythm']], axis=0)
     db_train['qa_label'] = np.concatenate([db_train['qa_label'], relabeled_db['qa_label']], axis=0)
     db_train['ID'] = np.concatenate([db_train['ID'], relabeled_db['ID']], axis=0)
-    
     return db_train
 
-
 def load_substituted_relabeled_data(path):
-    """Load saved substituted original data"""
     with open(path, 'rb') as file:
-        orig_sub_relabel = pickle.load(file)
-    return orig_sub_relabel
-
+        return pickle.load(file)
 
 def attach_VSM(db_data, relabeled_vsm):
-    """Attach VSM data to existing dataset"""
     db_data['data'] = np.concatenate([db_data['data'], relabeled_vsm['data']], axis=0)
     db_data['rhythm'] = np.concatenate([db_data['rhythm'], relabeled_vsm['rhythm']], axis=0)
     db_data['qa_label'] = np.concatenate([db_data['qa_label'], relabeled_vsm['qa_label']], axis=0)
     db_data['ID'] = np.concatenate([db_data['ID'], relabeled_vsm['ID']], axis=0)
     return db_data
 
-
 def shuffle_data(db_train):
-    """Shuffle training data"""
     data_train = db_train['data']
     label_train_r = db_train['rhythm']
     label_train_q = db_train['qa_label']
@@ -214,414 +139,242 @@ def shuffle_data(db_train):
     data_train = data_train[idx, :]
     label_train_r = label_train_r[idx]
     label_train_q = label_train_q[idx]
-    
     return data_train, label_train_r, label_train_q
 
-
 def load_training_data(args):
-    """Load training data based on specified choice"""
     print("=" * 60)
     print(f"TRAINING CHOICE: {args.training_choice}")
     print("=" * 60)
     
-    # db_orig_replaced: replace relabeled data, keep unrelabeled data
     if args.training_choice in ["db_orig_replaced", "db_orig_replaced_w_vsm"]:
         data_to_shuffle = load_substituted_relabeled_data(args.db_orig_replaced_path)
-        
         if args.training_choice == "db_orig_replaced_w_vsm":
             _, _, relabeled_vsm = load_relabeled_data(args.relabled_path)
             return attach_VSM(data_to_shuffle, relabeled_vsm)
-        
         return data_to_shuffle
     
-    # Handle db_orig
     if args.training_choice == "db_orig":
         return load_original_data(args.orig_data_path, 'train.npz')
     
-    # db_relabel: keep ONLY relabeled data
     if args.training_choice in ["db_relabel", "db_relabel_w_vsm"]:
         db_train = load_original_data(args.orig_data_path, 'train.npz')
         _, relabeled_db, relabeled_vsm = load_relabeled_data(args.relabled_path)
         data_to_shuffle = replace_updated_subjects_db(db_train, relabeled_db)
-        
         if args.training_choice == "db_relabel_w_vsm":
             return attach_VSM(data_to_shuffle, relabeled_vsm)
-    
     return data_to_shuffle
 
+# --- Training Logic ---
 
-def compute_loss(model, outputs, targets, device, qa_weight=0.2, rhythm_weight=5.0):
+def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0):
     """
-    Compute multi-task loss with weights.
-    
     Args:
-        model: DeepBeat model
-        outputs: Model outputs dictionary
-        targets: Ground truth targets dictionary
-        device: Device tensors are on
-        qa_weight: Weight for QA loss (default: 0.2)
-        rhythm_weight: Weight for rhythm loss (default: 5.0)
-    
-    Returns:
-        total_loss, qa_loss, rhythm_loss
+        qa_logits: Raw outputs from model (N, 3)
+        rhythm_logits: Raw outputs from model (N, 2)
+        targets: Dictionary containing 'qa_label' and 'rhythm_label' (One-hot)
     """
     qa_target = targets['qa_label'].to(device)
     rhythm_target = targets['rhythm_label'].to(device)
     
-    # Categorical cross-entropy for QA (3 classes)
-    qa_loss = nn.CrossEntropyLoss()(outputs['qa_output'], qa_target)
+    # 1. QA Loss: CrossEntropyLoss expects class indices, not one-hot
+    # Convert one-hot (N, 3) -> indices (N,)
+    qa_target_indices = torch.argmax(qa_target, dim=1)
+    qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target_indices)
     
-    # Binary cross-entropy for rhythm (2 classes) 
-    rhythm_loss = nn.BCELoss()(outputs['rhythm_output'], rhythm_target)
+    # 2. Rhythm Loss: BCEWithLogitsLoss is more stable than Sigmoid + BCELoss
+    # Takes raw logits (N, 2) and one-hot targets (N, 2)
+    rhythm_loss = nn.BCEWithLogitsLoss()(rhythm_logits, rhythm_target)
     
-    # # Add L2 regularization from keras model
-    # l2_reg = model.get_l2_regularization() 
-    
-    # Weighted loss
     total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss 
     
     return total_loss, qa_loss, rhythm_loss
 
-
-def compute_accuracy(outputs, targets, device):
-    """Compute accuracy for both outputs"""
-    # QA accuracy
-    qa_pred = torch.argmax(outputs['qa_output'].to(device), dim=1)
+def compute_accuracy(qa_logits, rhythm_logits, targets, device):
+    """Compute accuracy using raw logits"""
+    # QA
+    qa_pred = torch.argmax(qa_logits, dim=1)
     qa_true = torch.argmax(targets['qa_label'].to(device), dim=1)
     qa_acc = (qa_pred == qa_true).float().mean()
     
-    # Rhythm accuracy
-    rhythm_pred = torch.argmax(outputs['rhythm_output'].to(device), dim=1)
+    # Rhythm
+    rhythm_pred = torch.argmax(rhythm_logits, dim=1)
     rhythm_true = torch.argmax(targets['rhythm_label'].to(device), dim=1)
     rhythm_acc = (rhythm_pred == rhythm_true).float().mean()
     
     return qa_acc.item(), rhythm_acc.item()
 
-
-def train_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight):
-    """Train for one epoch"""
-    model.train()
-    
-    total_loss = 0
-    total_qa_loss = 0
-    total_rhythm_loss = 0
-    total_qa_acc = 0
-    total_rhythm_acc = 0
-    num_batches = 0
-    
-    for batch in dataloader:
-        data = batch['data'].to(device)
+def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, is_training=True):
+    if is_training:
+        model.train()
+    else:
+        model.eval()
         
-        # Zero gradients
-        optimizer.zero_grad()
-        
-        # Forward pass
-        outputs = model(data)
-        
-        # Compute loss
-        loss, qa_loss, rhythm_loss = compute_loss(model, outputs, batch, device, qa_weight, rhythm_weight)
-        
-        # Backward pass
-        loss.backward()
-        optimizer.step()
-        
-        # Compute accuracy
-        qa_acc, rhythm_acc = compute_accuracy(outputs, batch, device)
-        
-        # Accumulate metrics
-        total_loss += loss.item()
-        total_qa_loss += qa_loss.item()
-        total_rhythm_loss += rhythm_loss.item()
-        total_qa_acc += qa_acc
-        total_rhythm_acc += rhythm_acc
-        num_batches += 1
-    
-    # Average metrics
-    avg_loss = total_loss / num_batches
-    avg_qa_loss = total_qa_loss / num_batches
-    avg_rhythm_loss = total_rhythm_loss / num_batches
-    avg_qa_acc = total_qa_acc / num_batches
-    avg_rhythm_acc = total_rhythm_acc / num_batches
-    
-    return {
-        'loss': avg_loss,
-        'qa_loss': avg_qa_loss,
-        'rhythm_loss': avg_rhythm_loss,
-        'qa_accuracy': avg_qa_acc,
-        'rhythm_accuracy': avg_rhythm_acc
+    metrics = {
+        'loss': 0.0, 'qa_loss': 0.0, 'rhythm_loss': 0.0,
+        'qa_acc': 0.0, 'rhythm_acc': 0.0
     }
-
-
-def validate_epoch(model, dataloader, device, qa_weight, rhythm_weight):
-    """Validate for one epoch"""
-    model.eval()
     
-    total_loss = 0
-    total_qa_loss = 0
-    total_rhythm_loss = 0
-    total_qa_acc = 0
-    total_rhythm_acc = 0
     num_batches = 0
     
-    with torch.no_grad():
+    # Use torch.set_grad_enabled to handle train/eval modes conveniently
+    with torch.set_grad_enabled(is_training):
         for batch in dataloader:
             data = batch['data'].to(device)
             
-            # Forward pass
-            outputs = model(data)
+            if is_training:
+                optimizer.zero_grad()
+            
+            # Forward pass: Unpack tuple (qa, rhythm)
+            qa_logits, rhythm_logits = model(data)
             
             # Compute loss
-            loss, qa_loss, rhythm_loss = compute_loss(model, outputs, batch, device, qa_weight, rhythm_weight)
+            loss, qa_loss, rhythm_loss = compute_loss(
+                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight
+            )
+            
+            if is_training:
+                loss.backward()
+                optimizer.step()
             
             # Compute accuracy
-            qa_acc, rhythm_acc = compute_accuracy(outputs, batch, device)
+            qa_acc, rhythm_acc = compute_accuracy(qa_logits, rhythm_logits, batch, device)
             
-            # Accumulate metrics
-            total_loss += loss.item()
-            total_qa_loss += qa_loss.item()
-            total_rhythm_loss += rhythm_loss.item()
-            total_qa_acc += qa_acc
-            total_rhythm_acc += rhythm_acc
+            metrics['loss'] += loss.item()
+            metrics['qa_loss'] += qa_loss.item()
+            metrics['rhythm_loss'] += rhythm_loss.item()
+            metrics['qa_acc'] += qa_acc
+            metrics['rhythm_acc'] += rhythm_acc
             num_batches += 1
     
     # Average metrics
-    avg_loss = total_loss / num_batches
-    avg_qa_loss = total_qa_loss / num_batches
-    avg_rhythm_loss = total_rhythm_loss / num_batches
-    avg_qa_acc = total_qa_acc / num_batches
-    avg_rhythm_acc = total_rhythm_acc / num_batches
-    
-    return {
-        'loss': avg_loss,
-        'qa_loss': avg_qa_loss,
-        'rhythm_loss': avg_rhythm_loss,
-        'qa_accuracy': avg_qa_acc,
-        'rhythm_accuracy': avg_rhythm_acc
-    }
+    return {k: v / num_batches for k, v in metrics.items()}
 
+def setup_tensorboard(args):
+    log_path = Path(args.output_path) / Path(args.file_name)
+    log_path.mkdir(parents=True, exist_ok=True)
+    return SummaryWriter(log_dir=str(log_path))
+
+def parser_args():
+    parser = argparse.ArgumentParser()
+    
+    # data path
+    parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
+    parser.add_argument("--relabled_path", default=r'C:\Users\aoara\develop\deepbeat\data\relabeled_data')
+    parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\training_output')
+
+    # experiment config
+    parser.add_argument("--file_name", required=True, help="name the file (model name)")
+    valid_choices = ['db_orig', 'db_relabel', 'db_relabel_w_vsm', 'db_orig_replaced', 'db_orig_replaced_vsm']
+    parser.add_argument("--training_choice", choices=valid_choices, required=True, help=str(valid_choices))
+    parser.add_argument("--db_orig_replaced_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
+    
+    # hyperparameters
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--learning_rate", type=float, default=0.001)
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
+    parser.add_argument("--qa_loss_weight", type=float, default=0.2)
+    parser.add_argument("--rhythm_loss_weight", type=float, default=5.0)
+    
+    parser.add_argument("--device", type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument("--num_workers", type=int, default=4)
+    
+    return parser.parse_args()
 
 def main():
-    # Check GPU status
-    print("PYTORCH GPU STATUS")
-    print("=" * 60)
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"CUDA version: {torch.version.cuda}")
-        print(f"Number of GPUs: {torch.cuda.device_count()}")
-        for i in range(torch.cuda.device_count()):
-            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-    print("=" * 60 + "\n")
     
-    # Set random seeds
     torch.manual_seed(42)
     np.random.seed(42)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(42)
     
-    # Parse arguments
     args = parser_args()
     device = torch.device(args.device)
     print(f"Using device: {device}\n")
     
-    # Load training data
+    # 1. Load Data
     print("Loading training data...")
     data_to_shuffle = load_training_data(args)
     data_train, label_train_r, label_train_q = shuffle_data(data_to_shuffle)
-    print(f"Training data shape: {data_train.shape}")
-    print(f"Training QA labels shape: {label_train_q.shape}")
-    print(f"Training rhythm labels shape: {label_train_r.shape}\n")
-    
-    # Load validation data
+    print(f"Train Shape: {data_train.shape}")
+
     print("Loading validation data...")
     db_val = load_original_data(args.orig_data_path, 'validate.npz')
     data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
-    print(f"Validation data shape: {data_val.shape}")
-    print(f"Validation QA labels shape: {label_val_q.shape}")
-    print(f"Validation rhythm labels shape: {label_val_r.shape}\n")
+    print(f"Val Shape: {data_val.shape}")
     
-    # Create datasets
+    # 2. Dataset & Loader
     train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
     val_dataset = DeepBeatDataset(data_val, label_val_q, label_val_r)
     
-    # Create dataloaders
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True if device.type == 'cuda' else False
-    )
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
+                              num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, 
+                            num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True if device.type == 'cuda' else False
-    )
-    
-    # Create model
+    # 3. Model & Optimizer
     print("Creating model...")
     model = DeepBeatModel().to(device)
-    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters\n")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # # Create optimizer (using original config from Keras model)
-    # if args.training_choice == 'db_orig':
-    #      optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, eps=1e-07)
-    # else:
-        
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    
-    # Setup TensorBoard
     writer = setup_tensorboard(args)
     
-    # Training history
-    history = {
-        'loss': [],
-        'qa_output_loss': [],
-        'rhythm_output_loss': [],
-        'qa_output_accuracy': [],
-        'rhythm_output_accuracy': [],
-        'val_loss': [],
-        'val_qa_output_loss': [],
-        'val_rhythm_output_loss': [],
-        'val_qa_output_accuracy': [],
-        'val_rhythm_output_accuracy': []
-    }
-    
-    # Training loop
-    print("Starting training...")
-    print("=" * 60)
-    print(f"Loss weights - QA: {args.qa_loss_weight}, Rhythm: {args.rhythm_loss_weight}")
-    print("=" * 60)
-    
-    # Track best model based on validation rhythm accuracy
+    # 4. Training Loop
+    history = {'loss': [], 'val_loss': [], 'val_rhythm_acc': [], 'val_qa_acc': []}
     best_val_rhythm_acc = 0.0
     best_epoch = 0
     
+    print("Starting training...")
     for epoch in range(args.epochs):
         # Train
-        train_metrics = train_epoch(model, train_loader, optimizer, device, epoch, 
-                                    args.qa_loss_weight, args.rhythm_loss_weight)
+        train_m = run_epoch(model, train_loader, optimizer, device, epoch, 
+                            args.qa_loss_weight, args.rhythm_loss_weight, is_training=True)
         
         # Validate
-        val_metrics = validate_epoch(model, val_loader, device,
-                                     args.qa_loss_weight, args.rhythm_loss_weight)
+        val_m = run_epoch(model, val_loader, optimizer, device, epoch, 
+                          args.qa_loss_weight, args.rhythm_loss_weight, is_training=False)
         
-        # Store history
-        history['loss'].append(train_metrics['loss'])
-        history['qa_output_loss'].append(train_metrics['qa_loss'])
-        history['rhythm_output_loss'].append(train_metrics['rhythm_loss'])
-        history['qa_output_accuracy'].append(train_metrics['qa_accuracy'])
-        history['rhythm_output_accuracy'].append(train_metrics['rhythm_accuracy'])
+        # Logging
+        writer.add_scalars('Loss', {'train': train_m['loss'], 'val': val_m['loss']}, epoch)
+        writer.add_scalars('Accuracy/Rhythm', {'train': train_m['rhythm_acc'], 'val': val_m['rhythm_acc']}, epoch)
+        writer.add_scalars('Accuracy/QA', {'train': train_m['qa_acc'], 'val': val_m['qa_acc']}, epoch)
         
-        history['val_loss'].append(val_metrics['loss'])
-        history['val_qa_output_loss'].append(val_metrics['qa_loss'])
-        history['val_rhythm_output_loss'].append(val_metrics['rhythm_loss'])
-        history['val_qa_output_accuracy'].append(val_metrics['qa_accuracy'])
-        history['val_rhythm_output_accuracy'].append(val_metrics['rhythm_accuracy'])
+        history['loss'].append(train_m['loss'])
+        history['val_loss'].append(val_m['loss'])
+        history['val_rhythm_acc'].append(val_m['rhythm_acc'])
+        history['val_qa_acc'].append(val_m['qa_acc'])
         
-        # Log to TensorBoard
-        writer.add_scalar('Loss/train', train_metrics['loss'], epoch)
-        writer.add_scalar('Loss/val', val_metrics['loss'], epoch)
-        writer.add_scalar('QA_Loss/train', train_metrics['qa_loss'], epoch)
-        writer.add_scalar('QA_Loss/val', val_metrics['qa_loss'], epoch)
-        writer.add_scalar('Rhythm_Loss/train', train_metrics['rhythm_loss'], epoch)
-        writer.add_scalar('Rhythm_Loss/val', val_metrics['rhythm_loss'], epoch)
-        writer.add_scalar('QA_Accuracy/train', train_metrics['qa_accuracy'], epoch)
-        writer.add_scalar('QA_Accuracy/val', val_metrics['qa_accuracy'], epoch)
-        writer.add_scalar('Rhythm_Accuracy/train', train_metrics['rhythm_accuracy'], epoch)
-        writer.add_scalar('Rhythm_Accuracy/val', val_metrics['rhythm_accuracy'], epoch)
-        
-        # Check if this is the best model (based on validation rhythm accuracy)
-        if val_metrics['rhythm_accuracy'] > best_val_rhythm_acc:
-            best_val_rhythm_acc = val_metrics['rhythm_accuracy']
+        # Save Best
+        if val_m['rhythm_acc'] > best_val_rhythm_acc:
+            best_val_rhythm_acc = val_m['rhythm_acc']
             best_epoch = epoch + 1
             
-            # Save best model checkpoint
-            output_path = Path(args.output_path)
+            output_path = Path(args.output_path) / args.file_name
             output_path.mkdir(parents=True, exist_ok=True)
-            model_dir = output_path / Path(args.file_name)
-            model_dir.mkdir(parents=True, exist_ok=True)
             
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'val_rhythm_accuracy': val_metrics['rhythm_accuracy'],
-                'val_qa_accuracy': val_metrics['qa_accuracy'],
-                'val_loss': val_metrics['loss'],
-                'history_up_to_best': {k: v[:epoch+1] for k, v in history.items()}
-            }, model_dir / f"{args.file_name}_best.pth")
+                'val_metrics': val_m
+            }, output_path / f"{args.file_name}_best.pth")
             
-            print(f"  ⭐ New best model! Rhythm Val Acc: {val_metrics['rhythm_accuracy']:.4f}")
+            print(f"Epoch {epoch+1}: New Best Rhythm Acc: {best_val_rhythm_acc:.4f}")
+        else:
+            print(f"Epoch {epoch+1}: Train Loss {train_m['loss']:.4f} | Val Loss {val_m['loss']:.4f} | Val Rhythm Acc {val_m['rhythm_acc']:.4f}")
+
+    # Save Final
+    output_path = Path(args.output_path) / args.file_name
+    torch.save(model.state_dict(), output_path / f"{args.file_name}_final.pth")
+    
+    with open(output_path / f"{args.file_name}_history.pkl", 'wb') as f:
+        pickle.dump(history, f)
         
-        # Print progress
-        print(f"Epoch {epoch+1}/{args.epochs}")
-        print(f"  Train - Loss: {train_metrics['loss']:.4f}, "
-              f"QA Acc: {train_metrics['qa_accuracy']:.4f}, "
-              f"Rhythm Acc: {train_metrics['rhythm_accuracy']:.4f}")
-        print(f"  Val   - Loss: {val_metrics['loss']:.4f}, "
-              f"QA Acc: {val_metrics['qa_accuracy']:.4f}, "
-              f"Rhythm Acc: {val_metrics['rhythm_accuracy']:.4f}")
-    
-    print("=" * 60)
-    print("Training complete!")
-    print(f"Best model: Epoch {best_epoch}, Rhythm Val Acc: {best_val_rhythm_acc:.4f}")
-    print("=" * 60)
-    print()
-    
-    # Save final model and history
-    print("Saving final model and history...")
-    output_path = Path(args.output_path)
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    model_dir = output_path / Path(args.file_name)
-    model_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save PyTorch final model
-    torch.save({
-        'epoch': args.epochs,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'history': history,
-        'best_epoch': best_epoch,
-        'best_val_rhythm_acc': best_val_rhythm_acc
-    }, model_dir / f"{args.file_name}_final.pth")
-    
-    # Also save as the default name for compatibility
-    torch.save({
-        'epoch': args.epochs,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'history': history,
-        'best_epoch': best_epoch,
-        'best_val_rhythm_acc': best_val_rhythm_acc
-    }, model_dir / f"{args.file_name}.pth")
-    
-    # Save history separately
-    all_history = {
-        'model_name': args.file_name + '.pth',
-        'training_data': args.training_choice,
-        'date': datetime.now().isoformat(),
-        'qa_loss_weight': args.qa_loss_weight,
-        'rhythm_loss_weight': args.rhythm_loss_weight,
-        'history': history
-    }
-    
-    with open(model_dir / (args.file_name + '_history.pkl'), 'wb') as file:
-        pickle.dump(all_history, file)
-    
     writer.close()
-    print(f"\nModels saved to {model_dir}:")
-    print(f"  - {args.file_name}_best.pth (epoch {best_epoch}, rhythm acc: {best_val_rhythm_acc:.4f})")
-    print(f"  - {args.file_name}_final.pth (epoch {args.epochs})")
-    print(f"  - {args.file_name}.pth (same as final, for compatibility)")
-    print(f"  - {args.file_name}_history.pkl (training history)")
-    print("\n✅ Recommendation: Use '_best.pth' for inference (best validation performance)")
-
-
+    print(f"\nTraining Complete. Best Epoch: {best_epoch} with Acc: {best_val_rhythm_acc:.4f}")
 
 if __name__ == "__main__":
     main()
