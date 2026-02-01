@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class DeepBeat(nn.Module):
+class DeepBeatModel(nn.Module):
     def __init__(self):
-        super(DeepBeat, self).__init__()
+        super(DeepBeatModel, self).__init__()
         
         # --- Common Backbone ---
         self.conv1d_81 = nn.Conv1d(1, 64, kernel_size=10, padding=5) # 'same'
@@ -131,6 +131,37 @@ class DeepBeat(nn.Module):
         print(f"Rhythm Branch - Dense: {rh.shape}")
         rhythm_out = self.rhythm_out(rh) 
         print(f"Rhythm Final Output: {rhythm_out.shape}")
-        
+
+
+def test_model():
+    """Test the model with a sample input"""
+    model = DeepBeatModel()
+    
+    # Test with sample input
+    batch_size = 4
+    seq_len = 800
+    x = torch.randn(batch_size, 1, seq_len)
+    
+    print("Input shape:", x.shape)
+    
+    qa_out, rhythm_out = model(x)
+    
+    print("QA Output shape:", qa_out)
+    print("Rhythm Output shape:", rhythm_out)
+    
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    print(f"\nTotal parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    
+    # print output in each layer
+    model.check_forward_shape(x)
+    
+
+if __name__ == "__main__":
+    test_model()
+
         
  
