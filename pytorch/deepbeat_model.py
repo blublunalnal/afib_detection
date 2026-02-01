@@ -3,8 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DeepBeatModel(nn.Module):
-    def __init__(self):
+    def __init__(self, dropouts=None):
         super(DeepBeatModel, self).__init__()
+        
+        if dropouts is None:
+            dropouts = {
+                'do57': 0.118, 'do58': 0.545, 'do59': 0.568,
+                'do60': 0.672, 'do61': 0.374, 'do62': 0.414, 'do63': 0.017
+            }
         
         # --- Common Backbone ---
         self.conv1d_81 = nn.Conv1d(1, 64, kernel_size=10, padding=5) # 'same'
@@ -21,37 +27,37 @@ class DeepBeatModel(nn.Module):
 
         # --- Shared Bottleneck ---
         self.conv1d_84 = nn.Conv1d(50, 64, kernel_size=4, stride=3, padding=1)
-        self.lrelu = nn.LeakyReLU(0.1) # File uses Alpha 0.1 [cite: 91]
+        self.lrelu = nn.LeakyReLU(0.1) 
         self.bn66 = nn.BatchNorm1d(64)
-        self.do57 = nn.Dropout(0.118) # Specific rate 
+        self.do57 = nn.Dropout(dropouts['do57']) 
 
         self.conv1d_85 = nn.Conv1d(64, 35, kernel_size=4, stride=3, padding=1)
         self.bn67 = nn.BatchNorm1d(35)
-        self.do58 = nn.Dropout(0.545) # Specific rate 
+        self.do58 = nn.Dropout(dropouts['do58']) 
 
         self.conv1d_86 = nn.Conv1d(35, 64, kernel_size=4, padding=2) # Stride 1
         self.bn68 = nn.BatchNorm1d(64)
-        self.do59 = nn.Dropout(0.568) # Specific rate 
+        self.do59 = nn.Dropout(dropouts['do59']) 
 
         # --- QA Branch (Connected to Dropout 59) ---
         self.conv1d_87 = nn.Conv1d(64, 25, kernel_size=4, stride=2, padding=1)
         self.bn69 = nn.BatchNorm1d(25)
-        self.do60 = nn.Dropout(0.672) # Specific rate [cite: 23549]
+        self.do60 = nn.Dropout(dropouts['do60']) 
         self.dense17 = nn.Linear(75, 175)
         self.qa_out = nn.Linear(175, 3)
 
         # --- Rhythm Branch (Connected to Dropout 59) ---
         self.conv1d_88 = nn.Conv1d(64, 35, kernel_size=5, stride=3, padding=2)
         self.bn70 = nn.BatchNorm1d(35)
-        self.do61 = nn.Dropout(0.374) # Specific rate [cite: 23547]
+        self.do61 = nn.Dropout(dropouts['do61']) 
         
         self.conv1d_89 = nn.Conv1d(35, 25, kernel_size=4, stride=3, padding=2)
         self.bn71 = nn.BatchNorm1d(25)
-        self.do62 = nn.Dropout(0.414) # Specific rate [cite: 23548]
+        self.do62 = nn.Dropout(dropouts['do62']) 
 
         self.conv1d_90 = nn.Conv1d(25, 35, kernel_size=3, padding=1)
         self.bn72 = nn.BatchNorm1d(35)
-        self.do63 = nn.Dropout(0.017) # Specific rate [cite: 23549]
+        self.do63 = nn.Dropout(dropouts['do63']) 
         
         self.dense18 = nn.Linear(35, 175)
         self.rhythm_out = nn.Linear(175, 2)

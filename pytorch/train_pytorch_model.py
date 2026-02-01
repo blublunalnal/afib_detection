@@ -29,7 +29,7 @@ class DeepBeatDataset(Dataset):
     """PyTorch Dataset for DeepBeat data"""
     
     def __init__(self, data, qa_labels, rhythm_labels):
-        # CRITICAL FIX: PyTorch Conv1d needs (Batch, Channels, Length)
+        
         # Input is (N, 800, 1) -> Permute to (N, 1, 800)
         self.data = torch.FloatTensor(data).permute(0, 2, 1)
         self.qa_labels = torch.FloatTensor(qa_labels)
@@ -45,7 +45,7 @@ class DeepBeatDataset(Dataset):
             'rhythm_label': self.rhythm_labels[idx]
         }
 
-# --- Data Loading Utilities (Kept from original) ---
+# --- Data Loading tools ---
 
 def remove_nan_data(data_dict):
     """Remove samples containing NaN values"""
@@ -161,7 +161,7 @@ def load_training_data(args):
             return attach_VSM(data_to_shuffle, relabeled_vsm)
     return data_to_shuffle
 
-# --- Training Logic ---
+# training part starts
 
 def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0):
     """
@@ -360,7 +360,8 @@ def main():
         history['val_qa_acc'].append(val_m['qa_acc'])
         
         # Print summary of epoch
-        print(f"   -> Avg Val Rh Acc: {val_m['rhythm_acc']:.4f} | Avg Val Loss: {val_m['loss']:.4f}")
+        print(f"   -> Train Loss: {train_m['loss']:.4f} | Rh Acc: {train_m['rhythm_acc']:.4f} | QA Acc: {train_m['qa_acc']:.4f}")
+        print(f"   -> Val   Loss: {val_m['loss']:.4f} | Rh Acc: {val_m['rhythm_acc']:.4f} | QA Acc: {val_m['qa_acc']:.4f}")
         
         # Save Best
         if val_m['rhythm_acc'] > best_val_rhythm_acc:
