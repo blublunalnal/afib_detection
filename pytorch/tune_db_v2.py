@@ -412,7 +412,6 @@ if __name__ == "__main__":
             objective, 
             n_trials=ARGS.n_trials,
             timeout=None,
-            show_progress_bar=True,
             callbacks=[
                 # Save intermediate results every 5 trials
                 lambda study, trial: save_study_results(study, ARGS.output_path, ARGS.study_name) 
