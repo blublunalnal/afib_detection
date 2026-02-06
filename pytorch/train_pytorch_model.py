@@ -288,7 +288,8 @@ def parser_args():
     parser.add_argument("--rhythm_loss_weight", type=float, default=5.0)
     
     parser.add_argument("--device", type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=4) 
+    #Set num_workers=0 on Windows you get multiprocessing errors
     
     return parser.parse_args()
 
@@ -320,7 +321,6 @@ def main():
     train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
     val_dataset = DeepBeatDataset(data_val, label_val_q, label_val_r)
     
-    # NOTE: Set num_workers=0 on Windows if you get multiprocessing errors
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
                               num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, 
