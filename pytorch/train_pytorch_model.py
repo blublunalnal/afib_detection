@@ -13,8 +13,6 @@ from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 from scipy.io import loadmat
-
-# Add tqdm for progress bars
 from tqdm import tqdm 
 
 import torch
@@ -24,141 +22,87 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from deepbeat_model import DeepBeatModel 
+from utils import (DeepBeatDataset, EarlyStopping, 
+                   setup_tensorboard, restore_early_stopping_state, 
+                   apply_tuned_params, save_checkpoint, load_checkpoint, load_pickle_file, get_optimal_workers)
 
-class DeepBeatDataset(Dataset):
-    """PyTorch Dataset for DeepBeat data"""
-    
-    def __init__(self, data, qa_labels, rhythm_labels):
-        
-        # Input is (N, 800, 1) -> Permute to (N, 1, 800)
-        self.data = torch.FloatTensor(data).permute(0, 2, 1)
-        self.qa_labels = torch.FloatTensor(qa_labels)
-        self.rhythm_labels = torch.FloatTensor(rhythm_labels)
-        
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        return {
-            'data': self.data[idx],
-            'qa_label': self.qa_labels[idx],
-            'rhythm_label': self.rhythm_labels[idx]
-        }
 
-# --- Data Loading tools ---
+def parser_args():
+    parser = argparse.ArgumentParser()
+    
+    # data path
+    parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
+    parser.add_argument("--db_orig_replaced_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
+    parser.add_argument("--db_orig_replaced_vsm_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled_vsm.pkl")
+    parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\training_output')
+    parser.add_argument("--tuned_params_path", type=str, default=None, 
+                        help="Path to JSON file with tuned hyperparameters. If provided, overrides other hyperparameter args.")
+   
 
-def remove_nan_data(data_dict):
-    """Remove samples containing NaN values"""
-    no_nan_mask = ~np.isnan(data_dict['data']).any(axis=(1, 2))
-    for k in data_dict.keys():
-        data_dict[k] = data_dict[k][no_nan_mask]
-    return data_dict
+    # experiment config
+    parser.add_argument("--file_name", required=True, help="name the file (model name)")
+    valid_choices = ['db_orig', 'db_orig_replaced', 'db_orig_replaced_vsm']
+    # db_orig: original db training data (cleaned)
+    # db_orig_replaced: db_orig substituted with relabled data 
+    # db_orig_replaced_vsm: db_orig_replaced + new vsm data
+    parser.add_argument("--training_choice", choices=valid_choices, required=True, help=str(valid_choices))
+   
+    # hyperparameters
+    
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--learning_rate", type=float, default=0.001)
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
+    parser.add_argument("--qa_loss_weight", type=float, default=0.2)
+    parser.add_argument("--rhythm_loss_weight", type=float, default=5.0)
+    
+    # Early stopping
+    parser.add_argument("--early_stopping", action='store_true', 
+                        help="Enable early stopping")
+    parser.add_argument("--early_stopping_patience", type=int, default=15,
+                        help="Number of epochs with no improvement before stopping")
+    parser.add_argument("--early_stopping_min_delta", type=float, default=0.0001,
+                        help="Minimum change in monitored metric to qualify as improvement")
+    parser.add_argument("--early_stopping_metric", type=str, default='rhythm_acc',
+                        choices=['rhythm_acc', 'qa_acc', 'loss'],
+                        help="Metric to monitor for early stopping")
+    
+    # Resume training
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="Path to checkpoint file to resume training from")
+    parser.add_argument("--resume_epoch", type=int, default=None,
+                        help="Specific epoch to resume from (if checkpoint contains multiple)")
+    
+    parser.add_argument("--device", type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument("--num_workers", type=int, default=None) 
+    
+    
+    return parser.parse_args()
 
-def load_original_data(data_path, file_name):
-    data = np.load(Path(data_path) / file_name, allow_pickle=True)
-    output = {}
-    output['data'] = data['signal']
-    output['qa_label'] = data['qa_label']
-    output['rhythm'] = data['rhythm']
-    
-    params = pd.DataFrame(data['parameters'])
-    params.rename(index=str, columns={0: 'timestamp', 1: 'stream', 2: 'ID'}, inplace=True)
-    output['ID'] = np.array(params['ID'].to_list())
-    output = remove_nan_data(output)
-    return output
 
-def load_relabeled_data(data_path):
-    def load_from_mat(dir_path, file_name):
-        file_mat = loadmat(Path(dir_path) / file_name)
-        return file_mat.get(file_name[:-4])
-    
-    combined = {}
-    combined['data'] = load_from_mat(data_path, 'db_vsm_combined_data.mat')
-    combined['qa_label'] = load_from_mat(data_path, 'db_vsm_combined_label_q.mat')
-    combined['rhythm'] = load_from_mat(data_path, 'db_vsm_combined_label_r.mat')
-    combined['ID'] = load_from_mat(data_path, 'db_vsm_combined_sub_id.mat').flatten()
-    combined['data'] = combined['data'].reshape(combined['data'].shape[0], combined['data'].shape[1], 1)
-    
-    num_classes_rhythm = 2
-    num_classes_qa = 3
-    combined['rhythm'] = np.eye(num_classes_rhythm)[combined['rhythm'].flatten().astype(int)]
-    combined['qa_label'] = np.eye(num_classes_qa)[combined['qa_label'].flatten().astype(int)]
-    
-    relabeled_db = {}
-    relabeled_vsm = {}
-    db_mask = (combined['ID'] < 1000).flatten()
-    vsm_mask = (combined['ID'] >= 1000).flatten()
-    
-    relabeled_db['data'] = combined['data'][db_mask, :]
-    relabeled_db['qa_label'] = combined['qa_label'][db_mask, :]
-    relabeled_db['rhythm'] = combined['rhythm'][db_mask, :]
-    relabeled_db['ID'] = combined['ID'][db_mask].flatten()
-    
-    relabeled_vsm['data'] = combined['data'][vsm_mask, :]
-    relabeled_vsm['qa_label'] = combined['qa_label'][vsm_mask, :]
-    relabeled_vsm['rhythm'] = combined['rhythm'][vsm_mask, :]
-    relabeled_vsm['ID'] = combined['ID'][vsm_mask].flatten()
-    
-    return combined, relabeled_db, relabeled_vsm
-
-def replace_updated_subjects_db(db_train, relabeled_db):
-    subjects_to_replace = np.unique(relabeled_db['ID'])
-    mask_keep = ~np.isin(db_train['ID'], subjects_to_replace)
-    
-    db_train['data'] = db_train['data'][mask_keep]
-    db_train['rhythm'] = db_train['rhythm'][mask_keep]
-    db_train['qa_label'] = db_train['qa_label'][mask_keep]
-    db_train['ID'] = db_train['ID'][mask_keep]
-    
-    db_train['data'] = np.concatenate([db_train['data'], relabeled_db['data']], axis=0)
-    db_train['rhythm'] = np.concatenate([db_train['rhythm'], relabeled_db['rhythm']], axis=0)
-    db_train['qa_label'] = np.concatenate([db_train['qa_label'], relabeled_db['qa_label']], axis=0)
-    db_train['ID'] = np.concatenate([db_train['ID'], relabeled_db['ID']], axis=0)
-    return db_train
-
-def load_substituted_relabeled_data(path):
-    with open(path, 'rb') as file:
-        return pickle.load(file)
-
-def attach_VSM(db_data, relabeled_vsm):
-    db_data['data'] = np.concatenate([db_data['data'], relabeled_vsm['data']], axis=0)
-    db_data['rhythm'] = np.concatenate([db_data['rhythm'], relabeled_vsm['rhythm']], axis=0)
-    db_data['qa_label'] = np.concatenate([db_data['qa_label'], relabeled_vsm['qa_label']], axis=0)
-    db_data['ID'] = np.concatenate([db_data['ID'], relabeled_vsm['ID']], axis=0)
-    return db_data
-
-def shuffle_data(db_train):
-    data_train = db_train['data']
-    label_train_r = db_train['rhythm']
-    label_train_q = db_train['qa_label']
-    
-    idx = np.random.permutation(range(len(label_train_r)))
-    data_train = data_train[idx, :]
-    label_train_r = label_train_r[idx]
-    label_train_q = label_train_q[idx]
-    return data_train, label_train_r, label_train_q
 
 def load_training_data(args):
+    """
+
+    Args:
+        args 
+
+    Returns:
+         np.array: unshuffled training data
+    """
+
     print("=" * 60)
     print(f"TRAINING CHOICE: {args.training_choice}")
     print("=" * 60)
     
-    if args.training_choice in ["db_orig_replaced", "db_orig_replaced_w_vsm"]:
-        data_to_shuffle = load_substituted_relabeled_data(args.db_orig_replaced_path)
-        if args.training_choice == "db_orig_replaced_w_vsm":
-            _, _, relabeled_vsm = load_relabeled_data(args.relabled_path)
-            return attach_VSM(data_to_shuffle, relabeled_vsm)
-        return data_to_shuffle
+    path_dict = {
+        'db_orig': args.orig_data_path,
+        'db_orig_replaced': args.db_orig_replaced_path,
+        'db_orig_replaced_vsm': args.db_orig_replaced_vsm_path
+    }
+    data_to_shuffle = load_pickle_file(path_dict[args.training_choice])
     
-    if args.training_choice == "db_orig":
-        return load_original_data(args.orig_data_path, 'train.npz')
     
-    if args.training_choice in ["db_relabel", "db_relabel_w_vsm"]:
-        db_train = load_original_data(args.orig_data_path, 'train.npz')
-        _, relabeled_db, relabeled_vsm = load_relabeled_data(args.relabled_path)
-        data_to_shuffle = replace_updated_subjects_db(db_train, relabeled_db)
-        if args.training_choice == "db_relabel_w_vsm":
-            return attach_VSM(data_to_shuffle, relabeled_vsm)
     return data_to_shuffle
 
 # training part starts
@@ -215,7 +159,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     
     num_batches = 0
     
-    # --- ADDED: TQDM Progress Bar ---
+   
     # Wrap the dataloader with tqdm
     pbar = tqdm(dataloader, desc=desc_str, leave=True, ncols=120)
     
@@ -249,7 +193,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             metrics['rhythm_acc'] += rhythm_acc
             num_batches += 1
             
-            # --- ADDED: Update progress bar description with live metrics ---
+            # progress bar description with live metrics 
             pbar.set_postfix({
                 'Loss': f"{loss.item():.4f}", 
                 'QA_Acc': f"{qa_acc:.2f}", 
@@ -260,38 +204,12 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     avg_metrics = {k: v / num_batches for k, v in metrics.items()}
     return avg_metrics
 
-def setup_tensorboard(args):
-    log_path = Path(args.output_path) / Path(args.file_name)
-    log_path.mkdir(parents=True, exist_ok=True)
-    return SummaryWriter(log_dir=str(log_path))
 
-def parser_args():
-    parser = argparse.ArgumentParser()
-    
-    # data path
-    parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
-    parser.add_argument("--relabled_path", default=r'C:\Users\aoara\develop\deepbeat\data\relabeled_data')
-    parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\training_output')
 
-    # experiment config
-    parser.add_argument("--file_name", required=True, help="name the file (model name)")
-    valid_choices = ['db_orig', 'db_relabel', 'db_relabel_w_vsm', 'db_orig_replaced', 'db_orig_replaced_vsm']
-    parser.add_argument("--training_choice", choices=valid_choices, required=True, help=str(valid_choices))
-    parser.add_argument("--db_orig_replaced_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
-    
-    # hyperparameters
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--learning_rate", type=float, default=0.001)
-    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
-    parser.add_argument("--qa_loss_weight", type=float, default=0.2)
-    parser.add_argument("--rhythm_loss_weight", type=float, default=5.0)
-    
-    parser.add_argument("--device", type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument("--num_workers", type=int, default=4) 
-    #Set num_workers=0 on Windows you get multiprocessing errors
-    
-    return parser.parse_args()
+
+
+
+
 
 def main():
     print(f"PyTorch version: {torch.__version__}")
@@ -304,16 +222,40 @@ def main():
     
     args = parser_args()
     device = torch.device(args.device)
+    args.num_workers = get_optimal_workers(args.num_workers)
     print(f"Using device: {device}\n")
+    
+    # Check if resuming from checkpoint
+    resume_checkpoint = None
+    start_epoch = 1
+    history = {'loss': [], 'val_loss': [], 'val_rhythm_acc': [], 'val_qa_acc': []}
+    best_val_rhythm_acc = 0.0
+    best_epoch = 0
+    
+    if args.resume_from is not None:
+        if not Path(args.resume_from).exists():
+            print(f"ERROR: Checkpoint file not found: {args.resume_from}")
+            print("Starting training from scratch instead.\n")
+        else:
+            print("\n" + "="*60)
+            print("RESUMING TRAINING FROM CHECKPOINT")
+            print("="*60)
+            # will load the full checkpoint after creating model
+            resume_checkpoint = args.resume_from
+    
+    # Load tuned parameters if provided (unless resuming with saved params)
+    tuned_dropouts = None
+    if resume_checkpoint is None:
+        tuned_dropouts = apply_tuned_params(args)
     
     # 1. Load Data
     print("Loading training data...")
-    data_to_shuffle = load_training_data(args)
-    data_train, label_train_r, label_train_q = shuffle_data(data_to_shuffle)
+    train_data_dict = load_training_data(args)
+    data_train, label_train_r, label_train_q = train_data_dict['data'], train_data_dict['rhythm'], train_data_dict['qa_label']
     print(f"Train Shape: {data_train.shape}")
 
     print("Loading validation data...")
-    db_val = load_original_data(args.orig_data_path, 'validate.npz')
+    db_val = load_pickle_file(Path(args.orig_data_path).parent.joinpath('ori_val.pkl'))
     data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
     print(f"Val Shape: {data_val.shape}")
     
@@ -322,73 +264,211 @@ def main():
     val_dataset = DeepBeatDataset(data_val, label_val_q, label_val_r)
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
-                              num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
+                              num_workers=args.num_workers, pin_memory=(device.type == 'cuda'), 
+                              persistent_workers=True if args.num_workers > 0 else False)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, 
-                            num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
+                            num_workers=args.num_workers, pin_memory=(device.type == 'cuda'), 
+                            persistent_workers=True if args.num_workers > 0 else False)
     
     # 3. Model & Optimizer
     print("Creating model...")
-    model = DeepBeatModel().to(device)
+    
+    # Load checkpoint if resuming
+    if resume_checkpoint is not None:
+        # Load checkpoint to get hyperparameters
+        temp_checkpoint = torch.load(resume_checkpoint, map_location=device)
+        
+        # Get dropouts from checkpoint
+        if 'hyperparameters' in temp_checkpoint:
+            saved_dropouts = temp_checkpoint['hyperparameters'].get('dropouts')
+            if saved_dropouts != 'default':
+                tuned_dropouts = saved_dropouts
+        
+        # Create model with saved dropouts
+        if tuned_dropouts is not None:
+            model = DeepBeatModel(dropouts=tuned_dropouts).to(device)
+        else:
+            model = DeepBeatModel().to(device)
+        
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+        
+        # Now load the full checkpoint
+        checkpoint = load_checkpoint(resume_checkpoint, model, optimizer, device)
+        
+        # Restore training state
+        start_epoch = checkpoint['epoch'] + 1
+        history = checkpoint.get('history', history)
+        best_val_rhythm_acc = checkpoint.get('val_metrics', {}).get('rhythm_acc', 0.0)
+        best_epoch = checkpoint.get('epoch', 0)
+        
+        # Find the actual best epoch from history
+        if 'val_rhythm_acc' in history and len(history['val_rhythm_acc']) > 0:
+            best_val_rhythm_acc = max(history['val_rhythm_acc'])
+            best_epoch = history['val_rhythm_acc'].index(best_val_rhythm_acc) + 1
+        
+        print(f"\n✓ Training will resume from epoch {start_epoch}")
+        print(f"  Best val rhythm acc so far: {best_val_rhythm_acc:.4f} at epoch {best_epoch}")
+        
+    else:
+        # Fresh training - create model normally
+        if tuned_dropouts is not None:
+            model = DeepBeatModel(dropouts=tuned_dropouts).to(device)
+            print("Model initialized with TUNED dropout values")
+        else:
+            model = DeepBeatModel().to(device)
+            print("Model initialized with DEFAULT dropout values")
+        
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    
     print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     writer = setup_tensorboard(args)
     
+    # Initialize early stopping if enabled
+    early_stopper = None
+    if args.early_stopping:
+        # Determine mode based on metric
+        mode = 'min' if args.early_stopping_metric == 'loss' else 'max'
+        early_stopper = EarlyStopping(
+            patience=args.early_stopping_patience,
+            min_delta=args.early_stopping_min_delta,
+            mode=mode,
+            verbose=True
+        )
+        
+        # Restore early stopping state if resuming
+        if resume_checkpoint is not None:
+            restore_early_stopping_state(early_stopper, checkpoint)
+        
+        print(f"\n{'='*60}")
+        print(f"EARLY STOPPING ENABLED")
+        print(f"{'='*60}")
+        print(f"Monitoring metric:  {args.early_stopping_metric}")
+        print(f"Patience:           {args.early_stopping_patience} epochs")
+        print(f"Min delta:          {args.early_stopping_min_delta}")
+        print(f"Mode:               {mode} (better = {'lower' if mode == 'min' else 'higher'})")
+        print(f"{'='*60}\n")
+    
     # 4. Training Loop
-    history = {'loss': [], 'val_loss': [], 'val_rhythm_acc': [], 'val_qa_acc': []}
-    best_val_rhythm_acc = 0.0
-    best_epoch = 0
+    output_path = Path(args.output_path) / args.file_name
+    output_path.mkdir(parents=True, exist_ok=True)
     
     print("Starting training...")
-    for epoch in range(1, args.epochs + 1):
-        # Train
-        train_m = run_epoch(model, train_loader, optimizer, device, epoch, 
-                            args.qa_loss_weight, args.rhythm_loss_weight, is_training=True)
-        
-        # Validate
-        val_m = run_epoch(model, val_loader, optimizer, device, epoch, 
-                          args.qa_loss_weight, args.rhythm_loss_weight, is_training=False)
-        
-        # Logging
-        writer.add_scalars('Loss', {'train': train_m['loss'], 'val': val_m['loss']}, epoch)
-        writer.add_scalars('Accuracy/Rhythm', {'train': train_m['rhythm_acc'], 'val': val_m['rhythm_acc']}, epoch)
-        writer.add_scalars('Accuracy/QA', {'train': train_m['qa_acc'], 'val': val_m['qa_acc']}, epoch)
-        
-        history['loss'].append(train_m['loss'])
-        history['val_loss'].append(val_m['loss'])
-        history['val_rhythm_acc'].append(val_m['rhythm_acc'])
-        history['val_qa_acc'].append(val_m['qa_acc'])
-        
-        # Print summary of epoch
-        print(f"   -> Train Loss: {train_m['loss']:.4f} | Rh Acc: {train_m['rhythm_acc']:.4f} | QA Acc: {train_m['qa_acc']:.4f}")
-        print(f"   -> Val   Loss: {val_m['loss']:.4f} | Rh Acc: {val_m['rhythm_acc']:.4f} | QA Acc: {val_m['qa_acc']:.4f}")
-        
-        # Save Best
-        if val_m['rhythm_acc'] > best_val_rhythm_acc:
-            best_val_rhythm_acc = val_m['rhythm_acc']
-            best_epoch = epoch
+    try:
+        for epoch in range(start_epoch, args.epochs + 1):
+            # Train
+            train_m = run_epoch(model, train_loader, optimizer, device, epoch, 
+                                args.qa_loss_weight, args.rhythm_loss_weight, is_training=True)
             
-            output_path = Path(args.output_path) / args.file_name
-            output_path.mkdir(parents=True, exist_ok=True)
+            # Validate
+            val_m = run_epoch(model, val_loader, optimizer, device, epoch, 
+                              args.qa_loss_weight, args.rhythm_loss_weight, is_training=False)
             
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_metrics': val_m
-            }, output_path / f"{args.file_name}_best.pth")
+            # Logging
+            writer.add_scalars('Loss', {'train': train_m['loss'], 'val': val_m['loss']}, epoch)
+            writer.add_scalars('Accuracy/Rhythm', {'train': train_m['rhythm_acc'], 'val': val_m['rhythm_acc']}, epoch)
+            writer.add_scalars('Accuracy/QA', {'train': train_m['qa_acc'], 'val': val_m['qa_acc']}, epoch)
             
-            print(f"   ⭐ New Best Model Saved!")
-
+            history['loss'].append(train_m['loss'])
+            history['val_loss'].append(val_m['loss'])
+            history['val_rhythm_acc'].append(val_m['rhythm_acc'])
+            history['val_qa_acc'].append(val_m['qa_acc'])
+            
+            # Print summary of epoch
+            print(f"   -> Train Loss: {train_m['loss']:.4f} | Rh Acc: {train_m['rhythm_acc']:.4f} | QA Acc: {train_m['qa_acc']:.4f}")
+            print(f"   -> Val   Loss: {val_m['loss']:.4f} | Rh Acc: {val_m['rhythm_acc']:.4f} | QA Acc: {val_m['qa_acc']:.4f}")
+            
+            # Check early stopping
+            if early_stopper is not None:
+                metric_value = val_m[args.early_stopping_metric]
+                if early_stopper(metric_value, epoch):
+                    print(f"\nStopping training early at epoch {epoch}")
+                    break
+            
+            # Save Best
+            if val_m['rhythm_acc'] > best_val_rhythm_acc:
+                best_val_rhythm_acc = val_m['rhythm_acc']
+                best_epoch = epoch
+                
+                save_checkpoint(epoch, model, optimizer, val_m, history, args, 
+                               output_path, tuned_dropouts, early_stopper, 
+                               checkpoint_type='best')
+                
+                print(f"   ⭐ New Best Model Saved!")
+            
+            # Save progress checkpoint every 10 epochs (for resume capability)
+            if epoch % 10 == 0:
+                save_checkpoint(epoch, model, optimizer, val_m, history, args, 
+                               output_path, tuned_dropouts, early_stopper, 
+                               checkpoint_type='progress')
+                print(f"   💾 Progress checkpoint saved (epoch {epoch})")
+    
+    except KeyboardInterrupt:
+        print("\n\n" + "="*60)
+        print("⚠️  TRAINING INTERRUPTED BY USER (Ctrl+C)")
+        print("="*60)
+        print("Saving current progress before exiting...")
+        
+        # Save interrupted checkpoint
+        save_checkpoint(epoch, model, optimizer, val_m, history, args, 
+                       output_path, tuned_dropouts, early_stopper, 
+                       checkpoint_type='interrupted')
+        print(f"✓ Interrupted checkpoint saved at epoch {epoch}")
+        print(f"\nTo resume training, use:")
+        print(f"  --resume_from {output_path / f'{args.file_name}_interrupted.pth'}")
+        print("="*60 + "\n")
+        
+    except Exception as e:
+        print("\n\n" + "="*60)
+        print(f"❌ TRAINING FAILED WITH ERROR")
+        print("="*60)
+        print(f"Error: {str(e)}")
+        print("\nSaving current progress before exiting...")
+        
+        # Save error checkpoint
+        try:
+            save_checkpoint(epoch, model, optimizer, val_m, history, args, 
+                           output_path, tuned_dropouts, early_stopper, 
+                           checkpoint_type='error')
+            print(f"✓ Error checkpoint saved at epoch {epoch}")
+            print(f"\nTo resume training, use:")
+            print(f"  --resume_from {output_path / f'{args.file_name}_error.pth'}")
+        except:
+            print("Failed to save error checkpoint")
+        
+        print("="*60 + "\n")
+        raise  # Re-raise the exception
+    
     # Save Final
-    output_path = Path(args.output_path) / args.file_name
     torch.save(model.state_dict(), output_path / f"{args.file_name}_final.pth")
+    
+    # Save history with hyperparameters
+    history['hyperparameters'] = {
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
+        'weight_decay': args.weight_decay,
+        'qa_loss_weight': args.qa_loss_weight,
+        'rhythm_loss_weight': args.rhythm_loss_weight,
+        'dropouts': tuned_dropouts if tuned_dropouts is not None else 'default'
+    }
     
     with open(output_path / f"{args.file_name}_history.pkl", 'wb') as f:
         pickle.dump(history, f)
         
     writer.close()
-    print(f"\nTraining Complete. Best Epoch: {best_epoch} with Acc: {best_val_rhythm_acc:.4f}")
+    
+    # Final summary
+    print(f"\n{'='*60}")
+    print("TRAINING COMPLETE")
+    print(f"{'='*60}")
+    print(f"Best Epoch:          {best_epoch}")
+    print(f"Best Val Rhythm Acc: {best_val_rhythm_acc:.4f}")
+    if early_stopper is not None and early_stopper.early_stop:
+        print(f"Early Stopped:       Yes (after {epoch} epochs)")
+        print(f"Patience:            {args.early_stopping_patience}")
+    else:
+        print(f"Total Epochs:        {epoch}")
+    print(f"{'='*60}\n")
 
 if __name__ == "__main__":
     main()
