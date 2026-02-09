@@ -9,18 +9,16 @@ from pathlib import Path
 import json
 import pickle
 from datetime import datetime
-import os
-import multiprocessing as mp
+
 
 # Import your existing code
 from deepbeat_model import DeepBeatModel
 from train_pytorch_model import (
-    load_training_data, 
-    shuffle_data, 
-    DeepBeatDataset, 
-    run_epoch, 
-    load_original_data
+    load_training_data,  
+    compute_loss,
+    compute_accuracy
 )
+from utils import (DeepBeatDataset, get_optimal_workers, load_pickle_file, compute_f1_score)
 
 
 def parser_args():
@@ -28,19 +26,19 @@ def parser_args():
     
     # Data paths (same as original training script)
     parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
-    parser.add_argument("--relabled_path", default=r'C:\Users\aoara\develop\deepbeat\data\relabeled_data')
     parser.add_argument("--db_orig_replaced_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
+    parser.add_argument("--db_orig_replaced_vsm_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled_vsm.pkl")
     
     # Output path
     parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\optuna_studies')
     
     # Training data choice
-    valid_choices = ['db_orig', 'db_relabel', 'db_relabel_w_vsm', 'db_orig_replaced', 'db_orig_replaced_w_vsm']
+    valid_choices = ['db_orig', 'db_orig_replaced', 'db_orig_replaced_vsm']
     parser.add_argument("--training_choice", choices=valid_choices, required=True,
                        help="Training data choice")
     
     # Optuna parameters
-    parser.add_argument("--study_name", type=str, default="deepbeat_study",
+    parser.add_argument("--study_name", type=str, default="deepbeat_study_f1",
                        help="Name of the Optuna study")
     parser.add_argument("--n_trials", type=int, default=30,
                        help="Number of trials (reduced from 50 for faster completion)")
@@ -50,41 +48,78 @@ def parser_args():
                        help="Number of data loading workers (auto-detect if not specified)")
     parser.add_argument("--resume", action="store_true",
                        help="Resume existing study if it exists")
+    parser.add_argument("--f1_average", type=str, default="macro", 
+                       choices=["macro", "micro", "weighted", "binary"],
+                       help="F1 score averaging method")
     
     args = parser.parse_args()
     return args
 
 
-def get_optimal_workers(user_specified=None):
+
+
+def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, 
+                      is_training=True, f1_average='macro'):
     """
-    Determine optimal number of DataLoader workers
-    
-    Args:
-        user_specified: User-specified number of workers (None for auto-detect)
+    Modified run_epoch that also computes F1 scores
     
     Returns:
-        Optimal number of workers
+        Dictionary with metrics including F1 scores
     """
-    if user_specified is not None:
-        print(f"Using user-specified num_workers: {user_specified}")
-        return user_specified
+    if is_training:
+        model.train()
+    else:
+        model.eval()
     
-    # Auto-detect
-    try:
-        cpu_count = mp.cpu_count()
-    except NotImplementedError:
-        cpu_count = os.cpu_count() or 4
+    metrics = {
+        'loss': 0.0, 'qa_loss': 0.0, 'rhythm_loss': 0.0,
+        'qa_acc': 0.0, 'rhythm_acc': 0.0,
+        'qa_f1': 0.0, 'rhythm_f1': 0.0  # Add F1 metrics
+    }
     
-    # Rule of thumb: Use CPU count - 2, but at least 2, max 8
-    # Leave 1-2 cores for main process and system
-    optimal = max(2, min(cpu_count - 2, 8))
+    num_batches = 0
     
-    # On Windows, high worker counts can be problematic
-    if os.name == 'nt':  # Windows
-        optimal = min(optimal, 4)
+    with torch.set_grad_enabled(is_training):
+        for batch in dataloader:
+            data = batch['data'].to(device)
+            
+            if is_training:
+                optimizer.zero_grad()
+            
+            # Forward pass
+            qa_logits, rhythm_logits = model(data)
+            
+            # Compute loss
+            loss, qa_loss, rhythm_loss = compute_loss(
+                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight
+            )
+            
+            if is_training:
+                loss.backward()
+                optimizer.step()
+            
+            # Compute accuracy
+            qa_acc, rhythm_acc = compute_accuracy(qa_logits, rhythm_logits, batch, device)
+            
+            # Compute F1 scores
+            qa_f1 = compute_f1_score(qa_logits, batch['qa_label'], device, average=f1_average)
+            rhythm_f1 = compute_f1_score(rhythm_logits, batch['rhythm_label'], device, average=f1_average)
+            
+            # Update metrics
+            metrics['loss'] += loss.item()
+            metrics['qa_loss'] += qa_loss.item()
+            metrics['rhythm_loss'] += rhythm_loss.item()
+            metrics['qa_acc'] += qa_acc
+            metrics['rhythm_acc'] += rhythm_acc
+            metrics['qa_f1'] += qa_f1
+            metrics['rhythm_f1'] += rhythm_f1
+            num_batches += 1
     
-    print(f"Auto-detected num_workers: {optimal} (CPU cores: {cpu_count})")
-    return optimal
+    # Average metrics
+    for key in metrics:
+        metrics[key] /= num_batches
+    
+    return metrics
 
 
 def get_data(args, device):
@@ -92,11 +127,11 @@ def get_data(args, device):
     print("Loading Data for Tuning...")
     
     # Load Train
-    data_to_shuffle = load_training_data(args)
-    data_train, label_train_r, label_train_q = shuffle_data(data_to_shuffle)
+    train_data_dict = load_training_data(args)
+    data_train, label_train_r, label_train_q = train_data_dict['data'], train_data_dict['rhythm'], train_data_dict['qa_label']
     
     # Load Val
-    db_val = load_original_data(args.orig_data_path, 'validate.npz')
+    db_val = load_pickle_file(Path(args.orig_data_path).parent.joinpath('ori_val.pkl'))
     data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
 
     # Create Datasets
@@ -106,7 +141,7 @@ def get_data(args, device):
     return train_dataset, val_dataset
 
 
-class EarlyStopping:
+class EarlyStopping_OPTUNA:
     """Early stopping to terminate training when validation doesn't improve"""
     def __init__(self, patience=3, min_delta=0.001):
         self.patience = patience
@@ -130,14 +165,9 @@ class EarlyStopping:
 
 
 def objective(trial):
-    """Objective function for Optuna optimization"""
-    
+    """Objective function for Optuna optimization - MODIFIED TO OPTIMIZE F1 SCORE"""
+    global DEVICE, TRAIN_DS, VAL_DS, NUM_WORKERS, ARGS
     # 1. Define Hyperparameters to Tune
-    
-   
-    # - Shared bottleneck: do57 (early) -> do58, do59 (late)
-    # - QA branch: do60 (single dropout, non-primary task)
-    # - Rhythm branch: do61, do62 (early) -> do63 (late, keep features)
     
     # Early shared feature extraction (do57)
     early_shared_dropout = trial.suggest_float("early_shared_dropout", 0.0, 0.3)
@@ -183,62 +213,63 @@ def objective(trial):
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # Use the global datasets loaded outside
-    # OPTIMIZED: Auto-detected optimal num_workers for faster data loading
     train_loader = DataLoader(TRAIN_DS, batch_size=batch_size, shuffle=True, 
                              num_workers=NUM_WORKERS, 
                              pin_memory=True if device.type=='cuda' else False,
                              persistent_workers=True if NUM_WORKERS > 0 else False)
+    
     val_loader = DataLoader(VAL_DS, batch_size=batch_size, shuffle=False, 
                            num_workers=NUM_WORKERS, 
                            pin_memory=True if device.type=='cuda' else False,
                            persistent_workers=True if NUM_WORKERS > 0 else False)
 
     # 3. Training Loop with Early Stopping
-    n_epochs = ARGS.n_epochs  # Use from args (default 5)
-    early_stopping = EarlyStopping(patience=2, min_delta=0.001)
+    n_epochs = ARGS.n_epochs
+    early_stopping = EarlyStopping_OPTUNA(patience=3, min_delta=0.001)
     
-    best_accuracy = 0.0
+    best_f1 = 0.0  #  Track best F1 instead of accuracy
     
     for epoch in range(1, n_epochs + 1):
         # Training
-        _ = run_epoch(model, train_loader, optimizer, device, epoch, 
-                      qa_weight, rhythm_weight, is_training=True)
+        _ = run_epoch_with_f1(model, train_loader, optimizer, device, epoch, 
+                              qa_weight, rhythm_weight, is_training=True, 
+                              f1_average=ARGS.f1_average)
         
         # Validation
-        val_metrics = run_epoch(model, val_loader, optimizer, device, epoch, 
-                                qa_weight, rhythm_weight, is_training=False)
+        val_metrics = run_epoch_with_f1(model, val_loader, optimizer, device, epoch, 
+                                        qa_weight, rhythm_weight, is_training=False,
+                                        f1_average=ARGS.f1_average)
         
-        # Metric to optimize: Rhythm Accuracy
-        accuracy = val_metrics['rhythm_acc']
-        best_accuracy = max(best_accuracy, accuracy)
+        #  Metric to optimize is now Rhythm F1 Score
+        rhythm_f1 = val_metrics['rhythm_f1']
+        best_f1 = max(best_f1, rhythm_f1)
 
         # 4. Reporting & Pruning
-        trial.report(accuracy, epoch)
+        trial.report(rhythm_f1, epoch)
 
         # Handle Pruning (Stop unpromising trials early)
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
         
         # Early stopping if validation plateaus
-        if early_stopping(accuracy):
+        if early_stopping(rhythm_f1):
             print(f"  Early stopping at epoch {epoch}")
             break
 
-    return best_accuracy
+    return best_f1  # Return best F1 score instead of accuracy
 
 
 def save_study_results(study, output_path, study_name):
     """Save study results to files"""
-    output_dir = Path(output_path)
+    output_dir = Path(output_path) / study_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # 1. Save best parameters as JSON
+    # 1. Save best parameters
     best_params_file = output_dir / f"{study_name}_best_params_{timestamp}.json"
-    
-    # Expand grouped dropouts to individual values for easy use
     best_trial = study.best_trial
+    
     expanded_dropouts = {
         'do57': best_trial.params.get('early_shared_dropout'),
         'do58': best_trial.params.get('late_shared_dropout'),
@@ -252,6 +283,7 @@ def save_study_results(study, output_path, study_name):
     best_params = {
         'best_value': study.best_trial.value,
         'best_trial_number': study.best_trial.number,
+        'metric_optimized': 'rhythm_f1',  # Document what was optimized
         'grouped_params': study.best_trial.params,
         'expanded_dropouts': expanded_dropouts,
         'ready_to_use': {
@@ -305,7 +337,7 @@ def save_study_results(study, output_path, study_name):
         
         f.write(f"Best Trial:\n")
         f.write(f"  Trial number: {study.best_trial.number}\n")
-        f.write(f"  Rhythm Accuracy: {study.best_trial.value:.4f}\n\n")
+        f.write(f"  Rhythm F1 Score: {study.best_trial.value:.4f}\n\n")  # CHANGED
         
         f.write(f"Best Parameters (Grouped):\n")
         for key, value in study.best_trial.params.items():
@@ -324,7 +356,7 @@ def save_study_results(study, output_path, study_name):
         sorted_trials = sorted(completed_trials, key=lambda t: t.value, reverse=True)[:5]
         
         for i, trial in enumerate(sorted_trials, 1):
-            f.write(f"\n{i}. Trial {trial.number} - Accuracy: {trial.value:.4f}\n")
+            f.write(f"\n{i}. Trial {trial.number} - F1 Score: {trial.value:.4f}\n")  # CHANGED
             for key, value in trial.params.items():
                 f.write(f"   {key}: {value}\n")
     
@@ -336,7 +368,7 @@ if __name__ == "__main__":
     ARGS = parser_args()
     
     # Setup output directory
-    output_dir = Path(ARGS.output_path)
+    output_dir = Path(ARGS.output_path) / ARGS.study_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup device
@@ -352,7 +384,7 @@ if __name__ == "__main__":
     print(f"Train samples: {len(TRAIN_DS)}, Val samples: {len(VAL_DS)}")
     print("="*60 + "\n")
 
-    # Create or load study with SQLite persistence (Optuna only supports database backends)
+    # Create or load study with SQLite persistence
     storage_name = f"sqlite:///{output_dir / ARGS.study_name}.db"
     
     if ARGS.resume:
@@ -370,9 +402,9 @@ if __name__ == "__main__":
                 direction="maximize",
                 sampler=optuna.samplers.TPESampler(seed=42),
                 pruner=optuna.pruners.MedianPruner(
-                    n_startup_trials=3,      # num trials finish before pruning starts (STUDY-level)
-                    n_warmup_steps=2,        # epochs each trial gets before it can be pruned (TRIAL-level)
-                    interval_steps=1         # Check every epoch
+                    n_startup_trials=3,
+                    n_warmup_steps=2,
+                    interval_steps=1
                 ),
                 storage=storage_name,
                 load_if_exists=True
@@ -393,6 +425,7 @@ if __name__ == "__main__":
 
     print(f"\nOptimization Configuration:")
     print(f"  Study name: {ARGS.study_name}")
+    print(f"  Optimization metric: Rhythm F1 Score ({ARGS.f1_average} averaging)")  # CHANGED
     print(f"  Number of trials: {ARGS.n_trials}")
     print(f"  Epochs per trial: {ARGS.n_epochs}")
     print(f"  DataLoader workers: {NUM_WORKERS}")
@@ -437,7 +470,7 @@ if __name__ == "__main__":
     if complete_trials:
         print(f"\nBest trial:")
         trial = study.best_trial
-        print(f"  Value (Rhythm Acc): {trial.value:.4f}")
+        print(f"  Value (Rhythm F1 Score): {trial.value:.4f}")  # CHANGED
         print(f"  Params (grouped):")
         for key, value in trial.params.items():
             print(f"    {key}: {value}")
