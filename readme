@@ -1,2 +1,14 @@
-1. retraining deepbeat with relabeled data
-2. fine-tuning exisited PPG foundation models for AFib detection
+File explanation:
+
+`data_inspection.ipynb`: shows the entire process of cleaning original deepbeat data (drop duplicates with different labels, etc), and updating it with relabeled data
+
+`pytorch\deepbeat_model.py` : deepbeat equivalent in pytorch
+
+`pytorch/inspect_model.ipynb`: prints out total parameters and output of each layer of pytorch deepbeat model, and compares it with tensorflow model
+
+`pytorch\params_tuning_f1.py`: Baysian Optimization with Optuna by maximizing f1 score
+
+`pytorch\train_pytorch_model.py`: Model Training Script
+
+
+
