@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 import pickle
 from datetime import datetime
+from tqdm import tqdm
 
 
 # Import your existing code
@@ -26,11 +27,12 @@ def parser_args():
     
     # Data paths (same as original training script)
     parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
-    parser.add_argument("--db_orig_replaced_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
-    parser.add_argument("--db_orig_replaced_vsm_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled_vsm.pkl")
+    parser.add_argument("--val_data_path", default= '/content/ori_val.pkl')
+    parser.add_argument("--db_orig_replaced_path", default="/content/ori_train_clean_updated.pkl")
+    parser.add_argument("--db_orig_replaced_vsm_path", default="/content/db_orig_replaced_vsm.pkl")
     
     # Output path
-    parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\optuna_studies')
+    parser.add_argument("--output_path", default='/content/drive/MyDrive/afib/output/optuna')
     
     # Training data choice
     valid_choices = ['db_orig', 'db_orig_replaced', 'db_orig_replaced_vsm']
@@ -55,7 +57,23 @@ def parser_args():
     args = parser.parse_args()
     return args
 
+def get_data(args):
+    """Load data once to avoid reloading every trial"""
+    print("Loading Data for Tuning...")
+    
+    # Load Train
+    train_data_dict = load_training_data(args)
+    data_train, label_train_r, label_train_q = train_data_dict['data'], train_data_dict['rhythm'], train_data_dict['qa_label']
+    
+    # Load Val
+    db_val = load_pickle_file(Path(args.val_data_path))
+    data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
 
+    # Create Datasets
+    train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
+    val_dataset = DeepBeatDataset(data_val, label_val_q, label_val_r)
+    
+    return train_dataset, val_dataset
 
 
 def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, 
@@ -79,8 +97,12 @@ def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rh
     
     num_batches = 0
     
+    # Add progress bar for batches
+    phase = "Train" if is_training else "Val"
+    pbar = tqdm(dataloader, desc=f"  {phase} Epoch {epoch}", leave=False)
+    
     with torch.set_grad_enabled(is_training):
-        for batch in dataloader:
+        for batch in pbar:
             data = batch['data'].to(device)
             
             if is_training:
@@ -114,6 +136,12 @@ def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rh
             metrics['qa_f1'] += qa_f1
             metrics['rhythm_f1'] += rhythm_f1
             num_batches += 1
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'loss': f"{loss.item():.4f}",
+                'rhythm_f1': f"{rhythm_f1:.4f}"
+            })
     
     # Average metrics
     for key in metrics:
@@ -121,24 +149,6 @@ def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rh
     
     return metrics
 
-
-def get_data(args, device):
-    """Load data once to avoid reloading every trial"""
-    print("Loading Data for Tuning...")
-    
-    # Load Train
-    train_data_dict = load_training_data(args)
-    data_train, label_train_r, label_train_q = train_data_dict['data'], train_data_dict['rhythm'], train_data_dict['qa_label']
-    
-    # Load Val
-    db_val = load_pickle_file(Path(args.orig_data_path).parent.joinpath('ori_val.pkl'))
-    data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
-
-    # Create Datasets
-    train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
-    val_dataset = DeepBeatDataset(data_val, label_val_q, label_val_r)
-    
-    return train_dataset, val_dataset
 
 
 class EarlyStopping_OPTUNA:
@@ -162,6 +172,31 @@ class EarlyStopping_OPTUNA:
             self.counter = 0
         
         return self.early_stop
+
+
+class ProgressBarCallback:
+    """Callback to display progress bar for Optuna trials"""
+    def __init__(self, n_trials):
+        self.n_trials = n_trials
+        self.pbar = None
+        
+    def __call__(self, study, trial):
+        if self.pbar is None:
+            self.pbar = tqdm(total=self.n_trials, desc="Overall Progress")
+        
+        self.pbar.update(1)
+        
+        # Update with best trial info
+        if len(study.trials) > 0:
+            best_value = study.best_value if hasattr(study, 'best_value') else 0
+            self.pbar.set_postfix({
+                'best_f1': f"{best_value:.4f}",
+                'current_f1': f"{trial.value:.4f}" if trial.value is not None else "N/A"
+            })
+    
+    def close(self):
+        if self.pbar is not None:
+            self.pbar.close()
 
 
 def objective(trial):
@@ -229,7 +264,10 @@ def objective(trial):
     
     best_f1 = 0.0  #  Track best F1 instead of accuracy
     
-    for epoch in range(1, n_epochs + 1):
+    # Progress bar for epochs within this trial
+    epoch_pbar = tqdm(range(1, n_epochs + 1), desc=f"Trial {trial.number}", leave=False)
+    
+    for epoch in epoch_pbar:
         # Training
         _ = run_epoch_with_f1(model, train_loader, optimizer, device, epoch, 
                               qa_weight, rhythm_weight, is_training=True, 
@@ -243,6 +281,12 @@ def objective(trial):
         #  Metric to optimize is now Rhythm F1 Score
         rhythm_f1 = val_metrics['rhythm_f1']
         best_f1 = max(best_f1, rhythm_f1)
+        
+        # Update epoch progress bar
+        epoch_pbar.set_postfix({
+            'val_f1': f"{rhythm_f1:.4f}",
+            'best_f1': f"{best_f1:.4f}"
+        })
 
         # 4. Reporting & Pruning
         trial.report(rhythm_f1, epoch)
@@ -253,7 +297,7 @@ def objective(trial):
         
         # Early stopping if validation plateaus
         if early_stopping(rhythm_f1):
-            print(f"  Early stopping at epoch {epoch}")
+            epoch_pbar.set_description(f"Trial {trial.number} [Early Stop]")
             break
 
     return best_f1  # Return best F1 score instead of accuracy
@@ -380,7 +424,7 @@ if __name__ == "__main__":
     
     # Load data once globally
     print("\n" + "="*60)
-    TRAIN_DS, VAL_DS = get_data(ARGS, DEVICE)
+    TRAIN_DS, VAL_DS = get_data(ARGS)
     print(f"Train samples: {len(TRAIN_DS)}, Val samples: {len(VAL_DS)}")
     print("="*60 + "\n")
 
@@ -439,6 +483,9 @@ if __name__ == "__main__":
     print(f"  - Late rhythm (do63)")
     print("\nStarting optimization...\n")
     
+    # Initialize progress bar callback
+    progress_callback = ProgressBarCallback(ARGS.n_trials)
+    
     # Optimize with callbacks for progress tracking
     try:
         study.optimize(
@@ -446,6 +493,7 @@ if __name__ == "__main__":
             n_trials=ARGS.n_trials,
             timeout=None,
             callbacks=[
+                progress_callback,
                 # Save intermediate results every 5 trials
                 lambda study, trial: save_study_results(study, ARGS.output_path, ARGS.study_name) 
                 if trial.number % 5 == 0 and trial.number > 0 else None
@@ -453,6 +501,9 @@ if __name__ == "__main__":
         )
     except KeyboardInterrupt:
         print("\n\nOptimization interrupted by user. Saving current results...")
+    finally:
+        # Close progress bar
+        progress_callback.close()
     
     # Final results
     print("\n" + "="*60)

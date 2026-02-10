@@ -32,8 +32,9 @@ def parser_args():
     
     # data path
     parser.add_argument("--orig_data_path", default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
-    parser.add_argument("--db_orig_replaced_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled.pkl")
-    parser.add_argument("--db_orig_replaced_vsm_path", default=r"C:\Users\aoara\develop\deepbeat\output\replace_relabeled_vsm.pkl")
+    parser.add_argument("--val_data_path", default= '/content/ori_val.pkl')
+    parser.add_argument("--db_orig_replaced_path", default="/content/ori_train_clean_updated.pkl")
+    parser.add_argument("--db_orig_replaced_vsm_path", default="/content/db_orig_replaced_vsm.pkl")
     parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\training_output')
     parser.add_argument("--tuned_params_path", type=str, default=None, 
                         help="Path to JSON file with tuned hyperparameters. If provided, overrides other hyperparameter args.")
@@ -255,7 +256,7 @@ def main():
     print(f"Train Shape: {data_train.shape}")
 
     print("Loading validation data...")
-    db_val = load_pickle_file(Path(args.orig_data_path).parent.joinpath('ori_val.pkl'))
+    db_val = load_pickle_file(Path(args.val_data_path))
     data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
     print(f"Val Shape: {data_val.shape}")
     
