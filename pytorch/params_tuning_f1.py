@@ -97,20 +97,10 @@ def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rh
     
     num_batches = 0
     
-    # Add progress bar for batches
-    phase = "Train" if is_training else "Val"
-    total_batches = len(dataloader)
-    
-    # Update every 1% of batches or every 100 batches, whichever is smaller
-    update_freq = max(1, min(100, total_batches // 100))
-    
-    pbar = tqdm(total=total_batches, desc=f"  {phase} Epoch {epoch}", 
-                leave=False, ncols=100, mininterval=1.0)
-    
-    last_update = 0  # Track last update position
+    # NO batch progress bar - only epoch/trial level progress
     
     with torch.set_grad_enabled(is_training):
-        for batch_idx, batch in enumerate(dataloader):
+        for batch in dataloader:
             data = batch['data'].to(device)
             
             if is_training:
@@ -144,20 +134,6 @@ def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rh
             metrics['qa_f1'] += qa_f1
             metrics['rhythm_f1'] += rhythm_f1
             num_batches += 1
-            
-            # Update progress bar only periodically
-            if batch_idx % update_freq == 0 or batch_idx == total_batches - 1:
-                # Update by the difference since last update
-                increment = batch_idx - last_update + 1
-                pbar.update(increment)
-                last_update = batch_idx + 1
-                
-                pbar.set_postfix({
-                    'loss': f"{loss.item():.4f}",
-                    'rhythm_f1': f"{rhythm_f1:.4f}"
-                })
-    
-    pbar.close()
     
     # Average metrics
     for key in metrics:
