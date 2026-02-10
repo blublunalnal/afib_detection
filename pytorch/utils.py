@@ -44,6 +44,7 @@ class DeepBeatDataset(Dataset):
             'rhythm_label': self.rhythm_labels[idx]
         }
 
+
 def compute_f1_score(logits, targets, device, average='macro'):
     """
     Compute F1 score from logits and one-hot encoded targets
