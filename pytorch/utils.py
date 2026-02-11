@@ -45,7 +45,7 @@ class DeepBeatDataset(Dataset):
         }
 
 
-def compute_f1_score(logits, targets, device, average='macro'):
+def compute_f1_score(logits, targets, device, average='binary'):
     """
     Compute F1 score from logits and one-hot encoded targets
     
@@ -90,11 +90,9 @@ def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhyth
     # 2. Rhythm Loss: BCEWithLogitsLoss is more stable than Sigmoid + BCELoss
     # this is treating Afib and Normal Signals as two independent labels
     # Takes raw logits (N, 2) and one-hot targets (N, 2)
-    rhythm_loss = nn.BCEWithLogitsLoss()(rhythm_logits, rhythm_target)
-    
-    
-    # rhythm_target_indices = torch.argmax(rhythm_target, dim=1)
-    # rhythm_loss = nn.CrossEntropyLoss()(rhythm_logits, rhythm_target_indices)
+    #rhythm_loss = nn.BCEWithLogitsLoss()(rhythm_logits, rhythm_target)
+    rhythm_target_indices = torch.argmax(rhythm_target, dim=1)
+    rhythm_loss = nn.CrossEntropyLoss()(rhythm_logits, rhythm_target_indices)
     
     total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss 
     
@@ -385,7 +383,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, device='cpu'):
         checkpoint dict with all saved information
     """
     print(f"\nLoading checkpoint from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint= torch.load(checkpoint_path, map_location=device)
     
     # Load model state
     model.load_state_dict(checkpoint['model_state_dict'])
