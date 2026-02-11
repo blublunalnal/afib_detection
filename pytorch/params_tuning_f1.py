@@ -158,7 +158,7 @@ def objective(trial):
     batch_size = trial.suggest_categorical("batch_size", [128, 256])
     
     # Loss Weights - allow QA to vary more since rhythm is primary
-    qa_weight = trial.suggest_float("qa_weight", 0.1, 1.5)
+    qa_weight = 1
     rhythm_weight = trial.suggest_float("rhythm_weight", 1.0, 10.0)
 
     # 2. Setup Model & Data
@@ -257,7 +257,7 @@ def save_study_results(study, output_path, study_name):
             'lr': best_trial.params.get('lr'),
             'weight_decay': best_trial.params.get('weight_decay'),
             'batch_size': best_trial.params.get('batch_size'),
-            'qa_weight': best_trial.params.get('qa_weight'),
+            'qa_weight': 1,
             'rhythm_weight': best_trial.params.get('rhythm_weight'),
         }
     }
