@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 from deepbeat_model import DeepBeatModel 
 from utils import (DeepBeatDataset, EarlyStopping, 
                    setup_tensorboard, restore_early_stopping_state, 
-                   apply_tuned_params, save_checkpoint, load_checkpoint, load_pickle_file, get_optimal_workers)
+                   apply_tuned_params, save_checkpoint, load_checkpoint, load_pickle_file, get_optimal_workers, run_epoch)
 
 
 def parser_args():
@@ -38,6 +38,9 @@ def parser_args():
     parser.add_argument("--output_path", default=r'C:\Users\aoara\develop\deepbeat\training_output')
     parser.add_argument("--tuned_params_path", type=str, default=None, 
                         help="Path to JSON file with tuned hyperparameters. If provided, overrides other hyperparameter args.")
+    
+    # metric to save best model
+    parser.add_argument("--monitor_metric", type= str, default= 'rhythm_f1', choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1'])
    
 
     # experiment config
@@ -65,7 +68,7 @@ def parser_args():
     parser.add_argument("--early_stopping_min_delta", type=float, default=0.0001,
                         help="Minimum change in monitored metric to qualify as improvement")
     parser.add_argument("--early_stopping_metric", type=str, default='rhythm_acc',
-                        choices=['rhythm_acc', 'qa_acc', 'loss'],
+                        choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1'],
                         help="Metric to monitor for early stopping")
     
     # Resume training
@@ -108,29 +111,6 @@ def load_training_data(args):
 
 # training part starts
 
-def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0):
-    """
-    Args:
-        qa_logits: Raw outputs from model (N, 3)
-        rhythm_logits: Raw outputs from model (N, 2)
-        targets: Dictionary containing 'qa_label' and 'rhythm_label' (One-hot)
-    """
-    qa_target = targets['qa_label'].to(device)
-    rhythm_target = targets['rhythm_label'].to(device)
-    
-    # 1. QA Loss: CrossEntropyLoss expects class indices, not one-hot
-    # Convert one-hot (N, 3) -> indices (N,)
-    qa_target_indices = torch.argmax(qa_target, dim=1)
-    qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target_indices)
-    
-    # 2. Rhythm Loss: BCEWithLogitsLoss is more stable than Sigmoid + BCELoss
-    # Takes raw logits (N, 2) and one-hot targets (N, 2)
-    rhythm_loss = nn.BCEWithLogitsLoss()(rhythm_logits, rhythm_target)
-    
-    total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss 
-    
-    return total_loss, qa_loss, rhythm_loss
-
 def compute_accuracy(qa_logits, rhythm_logits, targets, device):
     """Compute accuracy using raw logits"""
     # QA
@@ -144,72 +124,6 @@ def compute_accuracy(qa_logits, rhythm_logits, targets, device):
     rhythm_acc = (rhythm_pred == rhythm_true).float().mean()
     
     return qa_acc.item(), rhythm_acc.item()
-
-def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, is_training=True):
-    if is_training:
-        model.train()
-        desc_str = f"Epoch {epoch} [TRAIN]"
-    else:
-        model.eval()
-        desc_str = f"Epoch {epoch} [VAL]  "
-        
-    metrics = {
-        'loss': 0.0, 'qa_loss': 0.0, 'rhythm_loss': 0.0,
-        'qa_acc': 0.0, 'rhythm_acc': 0.0
-    }
-    
-    num_batches = 0
-    
-   
-    # Wrap the dataloader with tqdm
-    pbar = tqdm(dataloader, desc=desc_str, leave=True, ncols=120)
-    
-    with torch.set_grad_enabled(is_training):
-        for batch in pbar:
-            data = batch['data'].to(device)
-            
-            if is_training:
-                optimizer.zero_grad()
-            
-            # Forward pass
-            qa_logits, rhythm_logits = model(data)
-            
-            # Compute loss
-            loss, qa_loss, rhythm_loss = compute_loss(
-                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight
-            )
-            
-            if is_training:
-                loss.backward()
-                optimizer.step()
-            
-            # Compute accuracy
-            qa_acc, rhythm_acc = compute_accuracy(qa_logits, rhythm_logits, batch, device)
-            
-            # Update metrics
-            metrics['loss'] += loss.item()
-            metrics['qa_loss'] += qa_loss.item()
-            metrics['rhythm_loss'] += rhythm_loss.item()
-            metrics['qa_acc'] += qa_acc
-            metrics['rhythm_acc'] += rhythm_acc
-            num_batches += 1
-            
-            # progress bar description with live metrics 
-            pbar.set_postfix({
-                'Loss': f"{loss.item():.4f}", 
-                'QA_Acc': f"{qa_acc:.2f}", 
-                'Rh_Acc': f"{rhythm_acc:.2f}"
-            })
-    
-    # Average metrics
-    avg_metrics = {k: v / num_batches for k, v in metrics.items()}
-    return avg_metrics
-
-
-
-
-
-
 
 
 def main():
@@ -227,11 +141,21 @@ def main():
     print(f"Using device: {device}\n")
     
     # Check if resuming from checkpoint
+    # Check if resuming from checkpoint
     resume_checkpoint = None
     start_epoch = 1
-    history = {'loss': [], 'val_loss': [], 'val_rhythm_acc': [], 'val_qa_acc': []}
-    best_val_rhythm_acc = 0.0
+    history = {'loss': [], 'val_loss': [], 'val_rhythm_acc': [], 'val_qa_acc': [], 'val_rhythm_f1': []}
+    
+    # Determine monitoring metric and mode
+    monitor_metric = args.monitor_metric
+    if not monitor_metric: 
+        monitor_metric = 'rhythm_acc' # Default fallback
+        
+    monitor_mode = 'min' if monitor_metric == 'loss' else 'max'
+    best_metric_val = float('inf') if monitor_mode == 'min' else -float('inf')
     best_epoch = 0
+    
+    print(f"Model checkpointing monitoring: {monitor_metric} (mode: {monitor_mode})")
     
     if args.resume_from is not None:
         if not Path(args.resume_from).exists():
@@ -303,12 +227,17 @@ def main():
         best_epoch = checkpoint.get('epoch', 0)
         
         # Find the actual best epoch from history
-        if 'val_rhythm_acc' in history and len(history['val_rhythm_acc']) > 0:
-            best_val_rhythm_acc = max(history['val_rhythm_acc'])
-            best_epoch = history['val_rhythm_acc'].index(best_val_rhythm_acc) + 1
-        
+        # Find the actual best epoch from history based on current monitor metric
+        hist_key = f'val_{monitor_metric}' # keys in history are prefixed with 'val_'
+        if hist_key in history and len(history[hist_key]) > 0:
+            if monitor_mode == 'min':
+                best_metric_val = min(history[hist_key])
+            else:
+                best_metric_val = max(history[hist_key])
+            best_epoch = history[hist_key].index(best_metric_val) + 1
+            
         print(f"\n✓ Training will resume from epoch {start_epoch}")
-        print(f"  Best val rhythm acc so far: {best_val_rhythm_acc:.4f} at epoch {best_epoch}")
+        print(f"  Best val {monitor_metric} so far: {best_metric_val:.4f} at epoch {best_epoch}")
         
     else:
         # Fresh training - create model normally
@@ -359,25 +288,27 @@ def main():
         for epoch in range(start_epoch, args.epochs + 1):
             # Train
             train_m = run_epoch(model, train_loader, optimizer, device, epoch, 
-                                args.qa_loss_weight, args.rhythm_loss_weight, is_training=True)
+                                args.qa_loss_weight, args.rhythm_loss_weight, is_training=True, progress_bar= True)
             
             # Validate
             val_m = run_epoch(model, val_loader, optimizer, device, epoch, 
-                              args.qa_loss_weight, args.rhythm_loss_weight, is_training=False)
+                              args.qa_loss_weight, args.rhythm_loss_weight, is_training=False, progress_bar= True)
             
             # Logging
             writer.add_scalars('Loss', {'train': train_m['loss'], 'val': val_m['loss']}, epoch)
             writer.add_scalars('Accuracy/Rhythm', {'train': train_m['rhythm_acc'], 'val': val_m['rhythm_acc']}, epoch)
             writer.add_scalars('Accuracy/QA', {'train': train_m['qa_acc'], 'val': val_m['qa_acc']}, epoch)
+            writer.add_scalars('F1_macro/Rhythm', {'train': train_m['rhythm_f1'], 'val': val_m['rhythm_f1']}, epoch)
             
             history['loss'].append(train_m['loss'])
             history['val_loss'].append(val_m['loss'])
             history['val_rhythm_acc'].append(val_m['rhythm_acc'])
             history['val_qa_acc'].append(val_m['qa_acc'])
+            history['val_rhythm_f1'].append(val_m['rhythm_f1'])
             
             # Print summary of epoch
-            print(f"   -> Train Loss: {train_m['loss']:.4f} | Rh Acc: {train_m['rhythm_acc']:.4f} | QA Acc: {train_m['qa_acc']:.4f}")
-            print(f"   -> Val   Loss: {val_m['loss']:.4f} | Rh Acc: {val_m['rhythm_acc']:.4f} | QA Acc: {val_m['qa_acc']:.4f}")
+            print(f"   -> Train Loss: {train_m['loss']:.4f} | Rh Acc: {train_m['rhythm_acc']:.4f} | Rh F1: {train_m['rhythm_f1']:.2f}| QA Acc: {train_m['qa_acc']:.4f}")
+            print(f"   -> Val   Loss: {val_m['loss']:.4f} | Rh Acc: {val_m['rhythm_acc']:.4f} |Rh f1: {val_m['rhythm_f1']: .2f} | QA Acc: {val_m['qa_acc']:.4f}")
             
             # Check early stopping
             if early_stopper is not None:
@@ -386,16 +317,26 @@ def main():
                     print(f"\nStopping training early at epoch {epoch}")
                     break
             
-            # Save Best
-            if val_m['rhythm_acc'] > best_val_rhythm_acc:
-                best_val_rhythm_acc = val_m['rhythm_acc']
+            # Save Best (Dynamic Metric)
+            current_val = val_m[monitor_metric]
+            is_best = False
+            
+            if monitor_mode == 'min':
+                if current_val < best_metric_val:
+                    is_best = True
+            else: # max
+                if current_val > best_metric_val:
+                    is_best = True
+            
+            if is_best:
+                best_metric_val = current_val
                 best_epoch = epoch
                 
                 save_checkpoint(epoch, model, optimizer, val_m, history, args, 
                                output_path, tuned_dropouts, early_stopper, 
                                checkpoint_type='best')
                 
-                print(f"   ⭐ New Best Model Saved!")
+                print(f"   ⭐ New Best Model Saved! ({monitor_metric}: {best_metric_val:.4f})")
             
             # Save progress checkpoint every 10 epochs (for resume capability)
             if epoch % 10 == 0:
@@ -463,7 +404,7 @@ def main():
     print("TRAINING COMPLETE")
     print(f"{'='*60}")
     print(f"Best Epoch:          {best_epoch}")
-    print(f"Best Val Rhythm Acc: {best_val_rhythm_acc:.4f}")
+    print(f"Best Val {monitor_metric}: {best_metric_val:.4f}")
     if early_stopper is not None and early_stopper.early_stop:
         print(f"Early Stopped:       Yes (after {epoch} epochs)")
         print(f"Patience:            {args.early_stopping_patience}")

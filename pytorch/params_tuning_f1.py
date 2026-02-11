@@ -11,15 +11,12 @@ import pickle
 from datetime import datetime
 from tqdm import tqdm
 
-
 # Import your existing code
 from deepbeat_model import DeepBeatModel
 from train_pytorch_model import (
     load_training_data,  
-    compute_loss,
-    compute_accuracy
 )
-from utils import (DeepBeatDataset, get_optimal_workers, load_pickle_file, compute_f1_score)
+from utils import (DeepBeatDataset, get_optimal_workers, load_pickle_file, run_epoch)
 
 
 def parser_args():
@@ -74,73 +71,6 @@ def get_data(args):
     val_dataset = DeepBeatDataset(data_val, label_val_q, label_val_r)
     
     return train_dataset, val_dataset
-
-
-def run_epoch_with_f1(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, 
-                      is_training=True, f1_average='macro'):
-    """
-    Modified run_epoch that also computes F1 scores
-    
-    Returns:
-        Dictionary with metrics including F1 scores
-    """
-    if is_training:
-        model.train()
-    else:
-        model.eval()
-    
-    metrics = {
-        'loss': 0.0, 'qa_loss': 0.0, 'rhythm_loss': 0.0,
-        'qa_acc': 0.0, 'rhythm_acc': 0.0,
-        'qa_f1': 0.0, 'rhythm_f1': 0.0  # Add F1 metrics
-    }
-    
-    num_batches = 0
-    
-    # NO batch progress bar - only epoch/trial level progress
-    
-    with torch.set_grad_enabled(is_training):
-        for batch in dataloader:
-            data = batch['data'].to(device)
-            
-            if is_training:
-                optimizer.zero_grad()
-            
-            # Forward pass
-            qa_logits, rhythm_logits = model(data)
-            
-            # Compute loss
-            loss, qa_loss, rhythm_loss = compute_loss(
-                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight
-            )
-            
-            if is_training:
-                loss.backward()
-                optimizer.step()
-            
-            # Compute accuracy
-            qa_acc, rhythm_acc = compute_accuracy(qa_logits, rhythm_logits, batch, device)
-            
-            # Compute F1 scores
-            qa_f1 = compute_f1_score(qa_logits, batch['qa_label'], device, average=f1_average)
-            rhythm_f1 = compute_f1_score(rhythm_logits, batch['rhythm_label'], device, average=f1_average)
-            
-            # Update metrics
-            metrics['loss'] += loss.item()
-            metrics['qa_loss'] += qa_loss.item()
-            metrics['rhythm_loss'] += rhythm_loss.item()
-            metrics['qa_acc'] += qa_acc
-            metrics['rhythm_acc'] += rhythm_acc
-            metrics['qa_f1'] += qa_f1
-            metrics['rhythm_f1'] += rhythm_f1
-            num_batches += 1
-    
-    # Average metrics
-    for key in metrics:
-        metrics[key] /= num_batches
-    
-    return metrics
-
 
 
 class EarlyStopping_OPTUNA:
@@ -261,12 +191,12 @@ def objective(trial):
     
     for epoch in epoch_pbar:
         # Training
-        _ = run_epoch_with_f1(model, train_loader, optimizer, device, epoch, 
+        _ = run_epoch(model, train_loader, optimizer, device, epoch, 
                               qa_weight, rhythm_weight, is_training=True, 
                               f1_average=ARGS.f1_average)
         
         # Validation
-        val_metrics = run_epoch_with_f1(model, val_loader, optimizer, device, epoch, 
+        val_metrics = run_epoch(model, val_loader, optimizer, device, epoch, 
                                         qa_weight, rhythm_weight, is_training=False,
                                         f1_average=ARGS.f1_average)
         
