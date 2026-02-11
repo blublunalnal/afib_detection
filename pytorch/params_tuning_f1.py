@@ -47,7 +47,7 @@ def parser_args():
                        help="Number of data loading workers (auto-detect if not specified)")
     parser.add_argument("--resume", action="store_true",
                        help="Resume existing study if it exists")
-    parser.add_argument("--f1_average", type=str, default="macro", 
+    parser.add_argument("--f1_average", type=str, default="binary", 
                        choices=["macro", "micro", "weighted", "binary"],
                        help="F1 score averaging method")
     
