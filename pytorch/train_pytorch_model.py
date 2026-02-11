@@ -144,7 +144,16 @@ def main():
     # Check if resuming from checkpoint
     resume_checkpoint = None
     start_epoch = 1
+    # Save history with hyperparameters
     history = {'loss': [], 'val_loss': [], 'val_rhythm_acc': [], 'val_qa_acc': [], 'val_rhythm_f1': []}
+    history['hyperparameters'] = {
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
+        'weight_decay': args.weight_decay,
+        'qa_loss_weight': args.qa_loss_weight,
+        'rhythm_loss_weight': args.rhythm_loss_weight,
+        'dropouts': tuned_dropouts if tuned_dropouts is not None else 'default'
+    }
     
     # Determine monitoring metric and mode
     monitor_metric = args.monitor_metric
@@ -168,10 +177,8 @@ def main():
             # will load the full checkpoint after creating model
             resume_checkpoint = args.resume_from
     
-    # Load tuned parameters if provided (unless resuming with saved params)
-    tuned_dropouts = None
-    if resume_checkpoint is None:
-        tuned_dropouts = apply_tuned_params(args)
+    # Load tuned parameters if provided 
+    tuned_dropouts = apply_tuned_params(args)
     
     # 1. Load Data
     print("Loading training data...")
@@ -387,15 +394,7 @@ def main():
                            output_path, tuned_dropouts, early_stopper, 
                            checkpoint_type='final')
     
-    # Save history with hyperparameters
-    history['hyperparameters'] = {
-        'batch_size': args.batch_size,
-        'learning_rate': args.learning_rate,
-        'weight_decay': args.weight_decay,
-        'qa_loss_weight': args.qa_loss_weight,
-        'rhythm_loss_weight': args.rhythm_loss_weight,
-        'dropouts': tuned_dropouts if tuned_dropouts is not None else 'default'
-    }
+  
     
     with open(output_path / f"{args.file_name}_history.pkl", 'wb') as f:
         pickle.dump(history, f)
