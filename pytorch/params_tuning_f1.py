@@ -155,7 +155,7 @@ def objective(trial):
     # Optimization Params
     lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
     weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [64, 128, 256])
+    batch_size = trial.suggest_categorical("batch_size", [128, 256])
     
     # Loss Weights - allow QA to vary more since rhythm is primary
     qa_weight = trial.suggest_float("qa_weight", 0.1, 1.5)
