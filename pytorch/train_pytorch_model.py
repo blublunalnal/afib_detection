@@ -146,15 +146,8 @@ def main():
     start_epoch = 1
     # Save history with hyperparameters
     history = {'loss': [], 'val_loss': [], 'val_rhythm_acc': [], 'val_qa_acc': [], 'val_rhythm_f1': []}
-    history['hyperparameters'] = {
-        'batch_size': args.batch_size,
-        'learning_rate': args.learning_rate,
-        'weight_decay': args.weight_decay,
-        'qa_loss_weight': args.qa_loss_weight,
-        'rhythm_loss_weight': args.rhythm_loss_weight,
-        'dropouts': tuned_dropouts if tuned_dropouts is not None else 'default'
-    }
     
+
     # Determine monitoring metric and mode
     monitor_metric = args.monitor_metric
     if not monitor_metric: 
@@ -179,6 +172,15 @@ def main():
     
     # Load tuned parameters if provided 
     tuned_dropouts = apply_tuned_params(args)
+    history['hyperparameters'] = {
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
+        'weight_decay': args.weight_decay,
+        'qa_loss_weight': args.qa_loss_weight,
+        'rhythm_loss_weight': args.rhythm_loss_weight,
+        'dropouts': tuned_dropouts if tuned_dropouts is not None else 'default'
+    }
+    print(history['hyperparameters'])
     
     # 1. Load Data
     print("Loading training data...")
