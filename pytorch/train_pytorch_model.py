@@ -382,7 +382,10 @@ def main():
         raise  # Re-raise the exception
     
     # Save Final
-    torch.save(model.state_dict(), output_path / f"{args.file_name}_final.pth")
+    #torch.save(model.state_dict(), output_path / f"{args.file_name}_final.pth")
+    save_checkpoint(epoch, model, optimizer, val_m, history, args, 
+                           output_path, tuned_dropouts, early_stopper, 
+                           checkpoint_type='final')
     
     # Save history with hyperparameters
     history['hyperparameters'] = {
