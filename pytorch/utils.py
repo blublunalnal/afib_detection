@@ -21,7 +21,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from scipy.io import loadmat
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, accuracy_score
 
 
 class DeepBeatDataset(Dataset):
@@ -71,6 +71,95 @@ def compute_f1_score(logits, targets, device, average='macro'):
     
     return f1
 
+
+def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0):
+    """
+    Args:
+        qa_logits: Raw outputs from model (N, 3)
+        rhythm_logits: Raw outputs from model (N, 2)
+        targets: Dictionary containing 'qa_label' and 'rhythm_label' (One-hot)
+    """
+    qa_target = targets['qa_label'].to(device)
+    rhythm_target = targets['rhythm_label'].to(device)
+    
+    # 1. QA Loss: CrossEntropyLoss expects class indices, not one-hot
+    # Convert one-hot (N, 3) -> indices (N,)
+    qa_target_indices = torch.argmax(qa_target, dim=1)
+    qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target_indices)
+    
+    # 2. Rhythm Loss: BCEWithLogitsLoss is more stable than Sigmoid + BCELoss
+    # this is treating Afib and Normal Signals as two independent labels
+    # Takes raw logits (N, 2) and one-hot targets (N, 2)
+    rhythm_loss = nn.BCEWithLogitsLoss()(rhythm_logits, rhythm_target)
+    
+    
+    # rhythm_target_indices = torch.argmax(rhythm_target, dim=1)
+    # rhythm_loss = nn.CrossEntropyLoss()(rhythm_logits, rhythm_target_indices)
+    
+    total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss 
+    
+    return total_loss, qa_loss, rhythm_loss
+
+
+def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, 
+                       is_training=True, f1_average='macro', progress_bar=False):
+    model.train() if is_training else model.eval()
+    desc_str = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
+    
+    running_loss = 0.0
+    all_qa_preds, all_qa_targets = [], []
+    all_rhythm_preds, all_rhythm_targets = [], []
+    
+    # Correctly wrap the dataloader for the progress bar
+    iterable = tqdm(dataloader, desc=desc_str, leave=True, ncols=120) if progress_bar else dataloader
+    
+    with torch.set_grad_enabled(is_training):
+        for batch in iterable:
+            data = batch['data'].to(device)
+            
+            if is_training:
+                optimizer.zero_grad()
+            
+            qa_logits, rhythm_logits = model(data)
+            
+            loss, qa_loss, rhythm_loss = compute_loss(
+                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight
+            )
+            
+            if is_training:
+                loss.backward()
+                optimizer.step()
+            
+            running_loss += loss.item()
+            
+            # Get predictions
+            qa_pred = torch.argmax(qa_logits, dim=1).detach().cpu().numpy()
+            rhythm_pred = torch.argmax(rhythm_logits, dim=1).detach().cpu().numpy()
+            
+            # --- Target Handling ---
+            # Use argmax ONLY if your labels are one-hot encoded. 
+            # If they are already class indices, just use .cpu().numpy()
+            qa_true = torch.argmax(batch['qa_label'], dim=1).detach().cpu().numpy()
+            rhythm_true = torch.argmax(batch['rhythm_label'], dim=1).detach().cpu().numpy()
+            
+            all_qa_preds.extend(qa_pred)
+            all_qa_targets.extend(qa_true)
+            all_rhythm_preds.extend(rhythm_pred)
+            all_rhythm_targets.extend(rhythm_true)
+
+            # Update progress bar in real-time
+            if progress_bar:
+                iterable.set_postfix({'loss': f"{loss.item():.4f}"})
+
+    # Compute final metrics
+    metrics = {
+        'loss': running_loss / len(dataloader),
+        'rhythm_f1': f1_score(all_rhythm_targets, all_rhythm_preds, average=f1_average, zero_division=0),
+        'qa_acc': accuracy_score(all_qa_targets, all_qa_preds),
+        'rhythm_acc': accuracy_score(all_rhythm_targets, all_rhythm_preds)
+    }
+    
+    return metrics
 
 
 def get_optimal_workers(user_specified=None):
