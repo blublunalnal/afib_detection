@@ -159,7 +159,7 @@ def objective(trial):
     
     # Loss Weights - allow QA to vary more since rhythm is primary
     qa_weight = 1
-    rhythm_weight = trial.suggest_float("rhythm_weight", 1.0, 10.0)
+    rhythm_weight = trial.suggest_float("rhythm_weight", 1.0, 6.0)
 
     # 2. Setup Model & Data
     device = DEVICE  # Use global device
