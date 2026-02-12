@@ -130,10 +130,10 @@ def objective(trial):
     early_shared_dropout = trial.suggest_float("early_shared_dropout", 0.0, 0.3)
     
     # Late shared feature extraction (do58, do59)
-    late_shared_dropout = trial.suggest_float("late_shared_dropout", 0.2, 0.7)
+    late_shared_dropout = trial.suggest_float("late_shared_dropout", 0.2, 0.5)
     
     # QA branch (do60) - can be higher since rhythm is primary
-    qa_dropout = trial.suggest_float("qa_dropout", 0.3, 0.8)
+    qa_dropout = trial.suggest_float("qa_dropout", 0.3, 0.5)
     
     # Early rhythm branch (do61, do62)
     early_rhythm_dropout = trial.suggest_float("early_rhythm_dropout", 0.2, 0.6)
@@ -153,8 +153,8 @@ def objective(trial):
     }
 
     # Optimization Params
-    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
-    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
+    lr = trial.suggest_float("lr", 5e-5, 5e-3, log=True)
+    weight_decay = trial.suggest_float("weight_decay", 1e-3, 1e-2, log=True)
     batch_size = trial.suggest_categorical("batch_size", [128, 256])
     
     # Loss Weights - allow QA to vary more since rhythm is primary
@@ -182,7 +182,7 @@ def objective(trial):
 
     # 3. Training Loop with Early Stopping
     n_epochs = ARGS.n_epochs
-    early_stopping = EarlyStopping_OPTUNA(patience=3, min_delta=0.001)
+    early_stopping = EarlyStopping_OPTUNA(patience=3, min_delta=0.0001)
     
     best_f1 = 0.0  #  Track best F1 instead of accuracy
     
