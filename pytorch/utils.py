@@ -132,7 +132,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
                 # Setting max_norm to float('inf') means the gradients are never scaled
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), 
-                    max_norm=float('inf')
+                    max_norm= 1.0
                 )
                 total_grad_norm += grad_norm.item()
                 optimizer.step()
