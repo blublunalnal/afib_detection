@@ -107,6 +107,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     running_loss = 0.0
     all_qa_preds, all_qa_targets = [], []
     all_rhythm_preds, all_rhythm_targets = [], []
+    total_grad_norm = 0.0
     
     # Correctly wrap the dataloader for the progress bar
     iterable = tqdm(dataloader, desc=desc_str, leave=True, ncols=120) if progress_bar else dataloader
@@ -126,6 +127,14 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             
             if is_training:
                 loss.backward()
+                
+                # Track the norm without clipping
+                # Setting max_norm to float('inf') means the gradients are never scaled
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), 
+                    max_norm=float('inf')
+                )
+                total_grad_norm += grad_norm.item()
                 optimizer.step()
             
             running_loss += loss.item()
@@ -154,7 +163,8 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
         'loss': running_loss / len(dataloader),
         'rhythm_f1': f1_score(all_rhythm_targets, all_rhythm_preds, average=f1_average, zero_division=0),
         'qa_acc': accuracy_score(all_qa_targets, all_qa_preds),
-        'rhythm_acc': accuracy_score(all_rhythm_targets, all_rhythm_preds)
+        'rhythm_acc': accuracy_score(all_rhythm_targets, all_rhythm_preds),
+        'grad_norm': total_grad_norm / len(dataloader) if is_training else 0.0
     }
     
     return metrics
