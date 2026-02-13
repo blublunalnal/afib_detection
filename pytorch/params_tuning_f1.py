@@ -168,6 +168,10 @@ def objective(trial):
     model = DeepBeatModel(dropouts=dropouts).to(device)
     
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=2, verbose=False
+    )
 
     # Use the global datasets loaded outside
     train_loader = DataLoader(TRAIN_DS, batch_size=batch_size, shuffle=True, 

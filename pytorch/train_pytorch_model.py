@@ -294,6 +294,14 @@ def main():
     
     print("Starting training...")
     try:
+        # learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='max', 
+        factor=0.5, 
+        patience=5, 
+        verbose=True
+        )
         for epoch in range(start_epoch, args.epochs + 1):
             # Train
             train_m = run_epoch(model, train_loader, optimizer, device, epoch, 
@@ -303,11 +311,15 @@ def main():
             val_m = run_epoch(model, val_loader, optimizer, device, epoch, 
                               args.qa_loss_weight, args.rhythm_loss_weight, is_training=False, progress_bar= True)
             
+            scheduler.step(val_m['rhythm_f1'])
+            
             # Logging
             writer.add_scalars('Loss', {'train': train_m['loss'], 'val': val_m['loss']}, epoch)
             writer.add_scalars('Accuracy/Rhythm', {'train': train_m['rhythm_acc'], 'val': val_m['rhythm_acc']}, epoch)
             writer.add_scalars('Accuracy/QA', {'train': train_m['qa_acc'], 'val': val_m['qa_acc']}, epoch)
             writer.add_scalars('F1_macro/Rhythm', {'train': train_m['rhythm_f1'], 'val': val_m['rhythm_f1']}, epoch)
+            current_lr = optimizer.param_groups[0]['lr']
+            writer.add_scalar('Learning_Rate', current_lr, epoch)
             
             history['loss'].append(train_m['loss'])
             history['val_loss'].append(val_m['loss'])

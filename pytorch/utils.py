@@ -100,7 +100,7 @@ def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhyth
 
 
 def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, 
-                       is_training=True, f1_average='macro', progress_bar=False):
+                       is_training=True, f1_average='binary', progress_bar=False):
     model.train() if is_training else model.eval()
     desc_str = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
     
