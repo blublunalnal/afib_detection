@@ -308,7 +308,7 @@ def main():
             writer.add_scalars('Accuracy/Rhythm', {'train': train_m['rhythm_acc'], 'val': val_m['rhythm_acc']}, epoch)
             writer.add_scalars('Accuracy/QA', {'train': train_m['qa_acc'], 'val': val_m['qa_acc']}, epoch)
             writer.add_scalars('F1_macro/Rhythm', {'train': train_m['rhythm_f1'], 'val': val_m['rhythm_f1']}, epoch)
-            writer.add_scalars('Gradients/Unclipped_Norm', {'train':train_m['grad_norm']}, epoch)
+            writer.add_scalar('Gradients/train', train_m['grad_norm'], epoch)
             
             history['loss'].append(train_m['loss'])
             history['val_loss'].append(val_m['loss'])
