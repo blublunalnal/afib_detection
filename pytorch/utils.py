@@ -105,6 +105,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     desc_str = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
     
     running_loss = 0.0
+    running_qa_loss, running_rhythm_loss = 0.0, 0.0
     all_qa_preds, all_qa_targets = [], []
     all_rhythm_preds, all_rhythm_targets = [], []
     total_grad_norm = 0.0
@@ -129,15 +130,17 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
                 loss.backward()
                 
                 # Track the norm without clipping
-                # Setting max_norm to float('inf') means the gradients are never scaled
+                # Setting max_norm to float('inf') means the gradients are never scaled for monitoring
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), 
-                    max_norm= 1.0
+                    max_norm= float('inf')
                 )
                 total_grad_norm += grad_norm.item()
                 optimizer.step()
             
             running_loss += loss.item()
+            running_qa_loss += qa_loss.item()
+            running_rhythm_loss += rhythm_loss.item()
             
             # Get predictions
             qa_pred = torch.argmax(qa_logits, dim=1).detach().cpu().numpy()
@@ -161,6 +164,8 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     # Compute final metrics
     metrics = {
         'loss': running_loss / len(dataloader),
+        'rhythm_loss': running_rhythm_loss /  len(dataloader),
+        'qa_loss': running_qa_loss / len(dataloader),
         'rhythm_f1': f1_score(all_rhythm_targets, all_rhythm_preds, average=f1_average, zero_division=0),
         'qa_acc': accuracy_score(all_qa_targets, all_qa_preds),
         'rhythm_acc': accuracy_score(all_rhythm_targets, all_rhythm_preds),
