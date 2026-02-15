@@ -44,7 +44,7 @@ class DeepBeatModel(nn.Module):
         self.bn69 = nn.BatchNorm1d(25)
         self.do60 = nn.Dropout(dropouts['do60']) 
         self.dense17 = nn.Linear(75, 175)
-        self.qa_out = nn.Linear(175, 3)
+        self.qa_out = nn.Linear(175, 2) ## change to 2 for debug purposes
 
         # --- Rhythm Branch (Connected to Dropout 59) ---
         self.conv1d_88 = nn.Conv1d(64, 35, kernel_size=5, stride=3, padding=2)
@@ -86,7 +86,7 @@ class DeepBeatModel(nn.Module):
         rh = self.do63(self.bn72(F.relu(self.conv1d_90(rh))))
         rh = torch.flatten(rh, 1)
         rh = F.relu(self.dense18(rh))
-        rhythm_out = self.rhythm_out(rh) # uses nn.BCEWithLogitsLoss for loss, which uses sigmoid() for activation
+        rhythm_out = self.rhythm_out(rh) 
         return qa_out, rhythm_out
  
     def check_forward_shape(self,x):
