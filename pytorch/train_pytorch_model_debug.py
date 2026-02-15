@@ -187,19 +187,28 @@ def main():
     }
     print(history['hyperparameters'])
     
+    def drop_low_QA_samples(data_dict):
+        labels_to_keep = np.argmax(data_dict['qa_label'], axis = 1) >= 1
+        for key in data_dict.keys():
+            data_dict[key] = data_dict[key][labels_to_keep]
+        return data_dict
+        
     # 1. Load Data
     print("Loading training data...")
     train_data_dict = load_training_data(args)
+    train_data_dict = drop_low_QA_samples(train_data_dict)
     data_train, label_train_r, label_train_q = train_data_dict['data'], train_data_dict['rhythm'], train_data_dict['qa_label']
     print(f"Train Shape: {data_train.shape}")
 
     print("Loading validation data...")
     db_val = load_pickle_file(Path(args.val_data_path))
+    db_val = drop_low_QA_samples(db_val)
     data_val, label_val_r, label_val_q = db_val['data'], db_val['rhythm'], db_val['qa_label']
     print(f"Val Shape: {data_val.shape}")
     
     print("Loading test data")
     db_test = load_pickle_file(Path(args.test_data_path))
+    db_test = drop_low_QA_samples(db_test)
     data_test, label_test_r, label_test_q = db_test['data'], db_test['rhythm'], db_test['qa_label']
     print(f"test shape: {data_test.shape}")
     
