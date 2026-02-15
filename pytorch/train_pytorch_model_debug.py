@@ -191,6 +191,12 @@ def main():
         labels_to_keep = np.argmax(data_dict['qa_label'], axis = 1) >= 1
         for key in data_dict.keys():
             data_dict[key] = data_dict[key][labels_to_keep]
+            
+        old_labels = np.argmax(data_dict['qa_label'], axis=1)
+        new_labels = old_labels - 1 
+        
+        # Re-create one-hot vectors for 2 classes
+        data_dict['qa_label'] = np.eye(2)[new_labels]
         return data_dict
         
     # 1. Load Data
