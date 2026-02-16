@@ -82,7 +82,7 @@ def calculate_auroc(logits, targets):
     
     probs = F.softmax(logits, dim=1)
     positive_probs = probs[:, 1].detach().cpu().numpy()
-    auc = roc_auc_score(targets.cpu().numpy(), positive_probs)
+    auc = roc_auc_score(targets, positive_probs)
     
     return auc
 
@@ -96,7 +96,7 @@ def calculate_auprc(logits, targets):
     logits = torch.tensor(logits)
     probs = F.softmax(logits, dim=1)
     positive_probs = probs[:, 1].detach().cpu().numpy()
-    auprc = average_precision_score(targets.cpu().numpy(), positive_probs)
+    auprc = average_precision_score(targets, positive_probs)
     return auprc
     
 
