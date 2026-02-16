@@ -73,17 +73,16 @@ def compute_f1_score(logits, targets, device, average='binary'):
 
 
 def calculate_auroc(logits, targets):
+    
+    logits = torch.tensor(logits)
     probs = F.softmax(logits, dim=1)
-
-    # Take the probabilities for the positive class (column 1)
     positive_probs = probs[:, 1].detach().cpu().numpy()
-
-    # Calculate AUC
     auc = roc_auc_score(targets.cpu().numpy(), positive_probs)
     
     return auc
 
 def calculate_auprc(logits, targets):
+    logits = torch.tensor(logits)
     probs = F.softmax(logits, dim=1)
     positive_probs = probs[:, 1].detach().cpu().numpy()
     auprc = average_precision_score(targets.cpu().numpy(), positive_probs)
