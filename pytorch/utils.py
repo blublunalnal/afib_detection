@@ -93,7 +93,6 @@ def calculate_auprc(logits, targets):
         # Stack all tensors into single tensor
         logits = torch.cat(logits, dim=0)
     
-    logits = torch.tensor(logits)
     probs = F.softmax(logits, dim=1)
     positive_probs = probs[:, 1].detach().cpu().numpy()
     auprc = average_precision_score(targets, positive_probs)
@@ -224,17 +223,16 @@ def compute_loss_single_task(logits, targets, device, branch = 'rhythm'):
 
     return loss
 
-def run_epoch_single_task(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, 
-                       is_training=True, f1_average='macro', progress_bar=False):
+def run_epoch_single_task(model, dataloader, optimizer, device, epoch, 
+                       is_training=True, f1_average='marco', progress_bar=False, branch = 'rhythm'):
     model.train() if is_training else model.eval()
     desc_str = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
     
     running_loss = 0.0
-    running_qa_loss, running_rhythm_loss = 0.0, 0.0
-    all_qa_preds, all_qa_targets = [], []
-    all_rhythm_preds, all_rhythm_targets = [], []
+    all_preds, all_targets = [], []
+  
     total_grad_norm = 0.0
-    all_rhythm_logits = []
+    all_logits = []
     
     # Correctly wrap the dataloader for the progress bar
     iterable = tqdm(dataloader, desc=desc_str, leave=True, ncols=120) if progress_bar else dataloader
@@ -246,11 +244,9 @@ def run_epoch_single_task(model, dataloader, optimizer, device, epoch, qa_weight
             if is_training:
                 optimizer.zero_grad()
             
-            qa_logits, rhythm_logits = model(data)
+            logits = model(data)
             
-            loss, qa_loss, rhythm_loss = compute_loss(
-                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight
-            )
+            loss = compute_loss_single_task(logits, batch, device, branch)
             
             if is_training:
                 loss.backward()
@@ -265,25 +261,18 @@ def run_epoch_single_task(model, dataloader, optimizer, device, epoch, qa_weight
                 optimizer.step()
             
             running_loss += loss.item()
-            running_qa_loss += qa_loss.item()
-            running_rhythm_loss += rhythm_loss.item()
             
             # Get predictions
-            qa_pred = torch.argmax(qa_logits, dim=1).detach().cpu().numpy()
-            rhythm_pred = torch.argmax(rhythm_logits, dim=1).detach().cpu().numpy()
+            pred_i = torch.argmax(logits, dim=1).detach().cpu().numpy()
             
             # --- Target Handling ---
             # Use argmax ONLY if your labels are one-hot encoded. 
             # If they are already class indices, just use .cpu().numpy()
-            qa_true = torch.argmax(batch['qa_label'], dim=1).detach().cpu().numpy()
-            rhythm_true = torch.argmax(batch['rhythm_label'], dim=1).detach().cpu().numpy()
+            true_i = torch.argmax(batch[branch +'label'], dim=1).detach().cpu().numpy()
             
-            all_qa_preds.extend(qa_pred)
-            all_qa_targets.extend(qa_true)
-            all_rhythm_preds.extend(rhythm_pred)
-            all_rhythm_targets.extend(rhythm_true)
-            all_rhythm_logits.append(rhythm_logits.detach().cpu())
-
+            all_targets.extend(true_i)
+            all_preds.extend(pred_i)
+            all_logits.append(all_logits.detach().cpu())
             # Update progress bar in real-time
             if progress_bar:
                 iterable.set_postfix({'loss': f"{loss.item():.4f}"})
@@ -291,14 +280,11 @@ def run_epoch_single_task(model, dataloader, optimizer, device, epoch, qa_weight
     # Compute final metrics
     metrics = {
         'loss': running_loss / len(dataloader),
-        'rhythm_loss': running_rhythm_loss /  len(dataloader),
-        'qa_loss': running_qa_loss / len(dataloader),
-        'rhythm_f1': f1_score(all_rhythm_targets, all_rhythm_preds, average=f1_average, zero_division=0),
-        'qa_acc': accuracy_score(all_qa_targets, all_qa_preds),
-        'rhythm_acc': accuracy_score(all_rhythm_targets, all_rhythm_preds),
+        'f1': f1_score(all_targets, all_preds, average=f1_average, zero_division=0),
+        'acc': accuracy_score(all_targets, all_preds),
         'grad_norm': total_grad_norm / len(dataloader) if is_training else 0.0,
-        'auroc': calculate_auroc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0,
-        'auprc': calculate_auprc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0 
+        'auroc': calculate_auroc(all_logits, all_targets) if not is_training else 0.0,
+        'auprc': calculate_auprc(all_logits, all_targets) if not is_training else 0.0 
     }
     
     return metrics
