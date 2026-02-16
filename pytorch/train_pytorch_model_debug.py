@@ -21,7 +21,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from deepbeat_model import DeepBeatModel 
+from deepbeat_model import balanced_DeepBeatModel
 from utils import (DeepBeatDataset, EarlyStopping, 
                    setup_tensorboard, restore_early_stopping_state, 
                    apply_tuned_params, save_checkpoint, load_checkpoint, load_pickle_file, get_optimal_workers, run_epoch)
@@ -250,9 +250,9 @@ def main():
         
         # Create model with saved dropouts
         if tuned_dropouts is not None:
-            model = DeepBeatModel(dropouts=tuned_dropouts).to(device)
+            model = balanced_DeepBeatModel(dropouts=tuned_dropouts).to(device)
         else:
-            model = DeepBeatModel().to(device)
+            model = balanced_DeepBeatModel().to(device)
         
         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
         
@@ -281,10 +281,10 @@ def main():
     else:
         # Fresh training - create model normally
         if tuned_dropouts is not None:
-            model = DeepBeatModel(dropouts=tuned_dropouts).to(device)
+            model = balanced_DeepBeatModel(dropouts=tuned_dropouts).to(device)
             print("Model initialized with TUNED dropout values")
         else:
-            model = DeepBeatModel().to(device)
+            model = balanced_DeepBeatModel().to(device)
             print("Model initialized with DEFAULT dropout values")
         
         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
