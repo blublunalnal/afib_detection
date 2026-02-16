@@ -73,8 +73,12 @@ def compute_f1_score(logits, targets, device, average='binary'):
 
 
 def calculate_auroc(logits, targets):
+    if isinstance(logits, list):
+        if len(logits) == 0:
+            return 0.0
+        # Stack all tensors into single tensor
+        logits = torch.stack(logits, dim=0)
     
-    logits = torch.tensor(logits)
     probs = F.softmax(logits, dim=1)
     positive_probs = probs[:, 1].detach().cpu().numpy()
     auc = roc_auc_score(targets.cpu().numpy(), positive_probs)
@@ -82,6 +86,12 @@ def calculate_auroc(logits, targets):
     return auc
 
 def calculate_auprc(logits, targets):
+    if isinstance(logits, list):
+        if len(logits) == 0:
+            return 0.0
+        # Stack all tensors into single tensor
+        logits = torch.stack(logits, dim=0)
+    
     logits = torch.tensor(logits)
     probs = F.softmax(logits, dim=1)
     positive_probs = probs[:, 1].detach().cpu().numpy()
@@ -174,7 +184,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             all_qa_targets.extend(qa_true)
             all_rhythm_preds.extend(rhythm_pred)
             all_rhythm_targets.extend(rhythm_true)
-            all_rhythm_logits.extend(rhythm_logits)
+            all_rhythm_logits.append(rhythm_logits.detach().cpu())
 
             # Update progress bar in real-time
             if progress_bar:
@@ -194,6 +204,25 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     }
     
     return metrics
+
+
+def compute_loss_single_task(logits, targets, device, branch = 'rhythm'):
+    """
+    calculate logits for single-task
+       
+    """
+    if branch == 'rhythm':
+        target = targets['rhythm_label'].to(device)
+    else: 
+        target = targets['qa_label'].to(device)
+    
+    
+    
+    target_indices = torch.argmax(target, dim=1)
+    loss = nn.CrossEntropyLoss()(logits, target_indices)
+    
+
+    return loss
 
 
 
