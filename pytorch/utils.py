@@ -272,7 +272,7 @@ def run_epoch_single_task(model, dataloader, optimizer, device, epoch,
             
             all_targets.extend(true_i)
             all_preds.extend(pred_i)
-            all_logits.append(all_logits.detach().cpu())
+            all_logits.append(logits.detach().cpu())
             # Update progress bar in real-time
             if progress_bar:
                 iterable.set_postfix({'loss': f"{loss.item():.4f}"})
