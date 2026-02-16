@@ -221,8 +221,8 @@ class balanced_DeepBeatModel(nn.Module):
         
         if dropouts is None:
             dropouts = {
-                'do57': 0.118, 'do58': 0.545, 'do59': 0.568,
-                'do60': 0.672, 'do61': 0.374, 'do62': 0.414, 'do63': 0.017
+                'do57': 0.25, 'do58': 0.25, 'do59': 0.25,
+                'do60': 0.25, 'do61': 0.25
             }
         
         # --- Common Backbone ---
