@@ -325,16 +325,13 @@ def main():
     try:
         for epoch in range(start_epoch, args.epochs + 1):
             # Train
-            train_m = run_epoch_single_task(model, train_loader, optimizer, device, epoch, 
-                                args.qa_loss_weight, args.rhythm_loss_weight, is_training=True, progress_bar= True)
+            train_m = run_epoch_single_task(model, train_loader, optimizer, device, epoch, is_training=True, progress_bar= True)
             
             # Validate
-            val_m = run_epoch_single_task(model, val_loader, optimizer, device, epoch, 
-                              args.qa_loss_weight, args.rhythm_loss_weight, is_training=False, progress_bar= True)
+            val_m = run_epoch_single_task(model, val_loader, optimizer, device, epoch,  is_training=False, progress_bar= True)
             
             # monitor test data to debug
-            test_m = run_epoch_single_task(model, test_loader, optimizer, device, epoch, 
-                              args.qa_loss_weight, args.rhythm_loss_weight, is_training=False, progress_bar= True)
+            test_m = run_epoch_single_task(model, test_loader, optimizer, device, epoch,  is_training=False, progress_bar= True)
             
             # Logging
             writer.add_scalars('Loss', {'train': train_m['loss'], 'val': val_m['loss'], 'test': test_m['loss']}, epoch)
