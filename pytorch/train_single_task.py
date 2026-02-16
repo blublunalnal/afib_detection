@@ -360,7 +360,7 @@ def main():
                     break
             
             # Save Best (Dynamic Metric)
-            current_val = val_m[monitor_metric]
+            current_val = val_m['f1']
             is_best = False
             
             if monitor_mode == 'min':
