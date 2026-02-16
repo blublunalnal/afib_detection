@@ -224,7 +224,7 @@ def compute_loss_single_task(logits, targets, device, branch = 'rhythm'):
     return loss
 
 def run_epoch_single_task(model, dataloader, optimizer, device, epoch, 
-                       is_training=True, f1_average='marco', progress_bar=False, branch = 'rhythm'):
+                       is_training=True, f1_average='macro', progress_bar=False, branch = 'rhythm'):
     model.train() if is_training else model.eval()
     desc_str = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
     
