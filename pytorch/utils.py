@@ -268,7 +268,7 @@ def run_epoch_single_task(model, dataloader, optimizer, device, epoch,
             # --- Target Handling ---
             # Use argmax ONLY if your labels are one-hot encoded. 
             # If they are already class indices, just use .cpu().numpy()
-            true_i = torch.argmax(batch[branch +'label'], dim=1).detach().cpu().numpy()
+            true_i = torch.argmax(batch['rhythm_label'], dim=1).detach().cpu().numpy()
             
             all_targets.extend(true_i)
             all_preds.extend(pred_i)
