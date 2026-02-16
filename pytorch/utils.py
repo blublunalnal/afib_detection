@@ -21,8 +21,8 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from scipy.io import loadmat
-from sklearn.metrics import f1_score, accuracy_score
-
+from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, average_precision_score
+import torch.nn.functional as F
 
 class DeepBeatDataset(Dataset):
     """PyTorch Dataset for DeepBeat data"""
@@ -72,6 +72,24 @@ def compute_f1_score(logits, targets, device, average='binary'):
     return f1
 
 
+def calculate_auroc(logits, targets):
+    probs = F.softmax(logits, dim=1)
+
+    # Take the probabilities for the positive class (column 1)
+    positive_probs = probs[:, 1].detach().cpu().numpy()
+
+    # Calculate AUC
+    auc = roc_auc_score(targets.cpu().numpy(), positive_probs)
+    
+    return auc
+
+def calculate_auprc(logits, targets):
+    probs = F.softmax(logits, dim=1)
+    positive_probs = probs[:, 1].detach().cpu().numpy()
+    auprc = average_precision_score(targets.cpu().numpy(), positive_probs)
+    return auprc
+    
+
 def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0):
     """
     Args:
@@ -109,6 +127,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     all_qa_preds, all_qa_targets = [], []
     all_rhythm_preds, all_rhythm_targets = [], []
     total_grad_norm = 0.0
+    all_rhythm_logits = []
     
     # Correctly wrap the dataloader for the progress bar
     iterable = tqdm(dataloader, desc=desc_str, leave=True, ncols=120) if progress_bar else dataloader
@@ -156,6 +175,7 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             all_qa_targets.extend(qa_true)
             all_rhythm_preds.extend(rhythm_pred)
             all_rhythm_targets.extend(rhythm_true)
+            all_rhythm_logits.extend(rhythm_logits)
 
             # Update progress bar in real-time
             if progress_bar:
@@ -169,10 +189,13 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
         'rhythm_f1': f1_score(all_rhythm_targets, all_rhythm_preds, average=f1_average, zero_division=0),
         'qa_acc': accuracy_score(all_qa_targets, all_qa_preds),
         'rhythm_acc': accuracy_score(all_rhythm_targets, all_rhythm_preds),
-        'grad_norm': total_grad_norm / len(dataloader) if is_training else 0.0
+        'grad_norm': total_grad_norm / len(dataloader) if is_training else 0.0,
+        'auroc': calculate_auroc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0,
+        'auprc': calculate_auprc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0 
     }
     
     return metrics
+
 
 
 def get_optimal_workers(user_specified=None):
