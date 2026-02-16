@@ -341,12 +341,12 @@ def main():
             writer.add_scalars('Loss', {'train': train_m['loss'], 'val': val_m['loss'], 'test': test_m['loss']}, epoch)
             writer.add_scalars('QA_loss', {'train': train_m['qa_loss'], 'val': val_m['qa_loss'], 'test': test_m['qa_loss']}, epoch)
             writer.add_scalars('Rhythm_loss', {'train': train_m['rhythm_loss'], 'val': val_m['rhythm_loss'], 'test': test_m['rhythm_loss']}, epoch)
-            
             writer.add_scalars('Accuracy/Rhythm', {'train': train_m['rhythm_acc'], 'val': val_m['rhythm_acc'], 'test': test_m['rhythm_acc']}, epoch)
             writer.add_scalars('Accuracy/QA', {'train': train_m['qa_acc'], 'val': val_m['qa_acc'], 'test': test_m['qa_acc']}, epoch)
-            
             writer.add_scalars('F1_macro/Rhythm', {'train': train_m['rhythm_f1'], 'val': val_m['rhythm_f1'], 'test': test_m['rhythm_f1']}, epoch)
             writer.add_scalar('Gradients/train', train_m['grad_norm'], epoch)
+            writer.add_scalars('auroc', {'val':val_m['auroc'], 'test': test_m['auroc'] }, epoch)
+            writer.add_scalars('auprc', {'val':val_m['auprc'], 'test': test_m['auprc'] }, epoch)
             
             history['loss'].append(train_m['loss'])
             history['val_loss'].append(val_m['loss'])
