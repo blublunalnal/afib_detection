@@ -75,8 +75,12 @@ def load_datasets(args):
     label_q_val = val_dict['qa_label']
     print(f"  Val shape:   {data_val.shape}")
 
-    train_ds = DeepBeatDataset(data_train, label_q_tr,  label_r_tr)
-    val_ds   = DeepBeatDataset(data_val,   label_q_val, label_r_val)
+    is_preprocessed = train_dict.get('preprocessed', False)
+    if is_preprocessed:
+        print("  Preprocessed data detected — skipping resampling and normalization.")
+
+    train_ds = DeepBeatDataset(data_train, label_q_tr,  label_r_tr,  preprocessed=is_preprocessed)
+    val_ds   = DeepBeatDataset(data_val,   label_q_val, label_r_val, preprocessed=is_preprocessed)
 
     return train_ds, val_ds
 

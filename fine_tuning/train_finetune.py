@@ -383,8 +383,12 @@ def main():
     label_val_r, label_val_q = val_dict['rhythm_label'], val_dict['qa_label']
     print(f"Val shape:   {data_val.shape}")
 
-    train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
-    val_dataset   = DeepBeatDataset(data_val,   label_val_q,   label_val_r)
+    is_preprocessed = train_dict.get('preprocessed', False)
+    if is_preprocessed:
+        print("Preprocessed data detected — skipping resampling and normalization.")
+
+    train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r, preprocessed=is_preprocessed)
+    val_dataset   = DeepBeatDataset(data_val,   label_val_q,   label_val_r,   preprocessed=is_preprocessed)
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
