@@ -15,9 +15,11 @@ class DeepBeatModel(nn.Module):
         # --- Common Backbone ---
         self.conv1d_81 = nn.Conv1d(1, 64, kernel_size=10, padding=5) # 'same'
         self.max_pool25 = nn.MaxPool1d(kernel_size=3, stride=3)
+        self.bn_81 = nn.BatchNorm1d(64) # add this for stability
         
         self.conv1d_82 = nn.Conv1d(64, 45, kernel_size=8, padding=4)
         self.max_pool26 = nn.MaxPool1d(kernel_size=3, stride=3)
+        self.bn_82 = nn.BatchNorm1d(45) # add this for stability
         
         self.conv1d_83 = nn.Conv1d(45, 50, kernel_size=5, padding=2)
         self.max_pool27 = nn.MaxPool1d(kernel_size=2, stride=2, padding=1) # 'same' padding
@@ -65,7 +67,9 @@ class DeepBeatModel(nn.Module):
     def forward(self, x):
         # Backbone
         x = self.max_pool25(F.relu(self.conv1d_81(x)))
+        x = self.bn_81(x)
         x = self.max_pool26(F.relu(self.conv1d_82(x)))
+        x = self.bn_82(x)
         x = self.max_pool27(F.relu(self.conv1d_83(x)))
         x = self.bn65(x)
 
