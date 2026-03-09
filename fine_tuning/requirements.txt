@@ -1,0 +1,8 @@
+torch
+tensorboard
+numpy
+scipy
+tqdm
+scikit-learn
+optuna
+resnet1d
