@@ -15,21 +15,30 @@ class DeepBeatDataset(Dataset):
       - Preprocessed data (N, C, L) @ 125Hz — pass preprocessed=True to skip processing
     """
 
-    def __init__(self, data, qa_labels, rhythm_labels, preprocessed=False):
+    def __init__(self, data, qa_labels, rhythm_labels, preprocessed=False, chunk_size=512):
         if preprocessed:
             # Data already resampled and normalized by preprocess.py: shape (N, C, L)
             self.data = torch.FloatTensor(data)
         else:
-            # 1. Upsample from 32Hz to 125Hz using polyphase filter (data shape: N, L, C)
-            data_resampled = ss.resample_poly(data, 125, 32, axis=1)
+            # Process in chunks to avoid allocating the full resampled array at once.
+            # Peak RAM per chunk: chunk_size * 800 * 1 (raw) + chunk_size * 3125 * 1 (resampled)
+            N = data.shape[0]
+            target_L = int(data.shape[1] * (125 / 32))  # 3125
+            C = data.shape[2]
 
-            # Convert to tensor and permute to (N, C, L) -> (N, 1, 3125)
-            self.data = torch.FloatTensor(data_resampled).permute(0, 2, 1)
+            self.data = torch.empty(N, C, target_L, dtype=torch.float32)
 
-            # 2. Z-score normalization along the time axis (dim=-1)
-            mean = self.data.mean(dim=-1, keepdim=True)
-            std  = self.data.std(dim=-1, keepdim=True)
-            self.data = (self.data - mean) / (std + 1e-8)
+            for start in range(0, N, chunk_size):
+                end = min(start + chunk_size, N)
+                chunk = ss.resample_poly(data[start:end], 125, 32, axis=1)  # (chunk, L', C)
+                chunk_t = torch.FloatTensor(chunk).permute(0, 2, 1)         # (chunk, C, L')
+
+                # Z-score normalization per sample along time axis
+                mean = chunk_t.mean(dim=-1, keepdim=True)
+                std  = chunk_t.std(dim=-1, keepdim=True)
+                self.data[start:end] = (chunk_t - mean) / (std + 1e-8)
+
+                del chunk, chunk_t  # free intermediates immediately
 
         # Labels are integer class indices, not one-hot
         self.qa_labels = torch.LongTensor(qa_labels)

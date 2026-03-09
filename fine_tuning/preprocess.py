@@ -28,32 +28,41 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Preprocess DeepBeat data for AnyPPG fine-tuning")
     parser.add_argument("--input_path",  required=True, help="Path to raw pickle file")
     parser.add_argument("--output_path", required=True, help="Path to save preprocessed pickle file")
+    parser.add_argument("--chunk_size",  type=int, default=512,
+                        help="Samples processed per chunk (lower = less peak RAM, default: 512)")
     return parser.parse_args()
 
 
-def preprocess(data):
+def preprocess(data, chunk_size=512):
     """
     Args:
         data: np.ndarray of shape (N, L, C) @ 32Hz
+        chunk_size: number of samples processed at a time to limit peak RAM
 
     Returns:
         np.ndarray of shape (N, C, L') @ 125Hz, z-score normalized
     """
-    # 1. Upsample 32Hz -> 125Hz along time axis
-    print("  Resampling 32Hz -> 125Hz ...")
-    data_resampled = ss.resample_poly(data, 125, 32, axis=1)
-    print(f"  Shape after resampling: {data_resampled.shape}")
+    N        = data.shape[0]
+    target_L = int(data.shape[1] * (125 / 32))  # 3125
+    C        = data.shape[2]
 
-    # 2. Convert to tensor and permute to (N, C, L)
-    x = torch.FloatTensor(data_resampled).permute(0, 2, 1)
+    out = np.empty((N, C, target_L), dtype=np.float32)
 
-    # 3. Z-score normalization along the time axis
-    print("  Applying z-score normalization ...")
-    mean = x.mean(dim=-1, keepdim=True)
-    std  = x.std(dim=-1, keepdim=True)
-    x    = (x - mean) / (std + 1e-8)
+    for start in range(0, N, chunk_size):
+        end   = min(start + chunk_size, N)
+        chunk = ss.resample_poly(data[start:end], 125, 32, axis=1)  # (chunk, L', C)
+        x     = torch.FloatTensor(chunk).permute(0, 2, 1)           # (chunk, C, L')
 
-    return x.numpy()  # save as numpy, DataLoader handles tensor conversion
+        mean = x.mean(dim=-1, keepdim=True)
+        std  = x.std(dim=-1, keepdim=True)
+        out[start:end] = ((x - mean) / (std + 1e-8)).numpy()
+
+        del chunk, x
+
+        if (start // chunk_size) % 10 == 0:
+            print(f"  Processed {end}/{N} samples...")
+
+    return out
 
 
 def main():
@@ -75,9 +84,9 @@ def main():
     qa_labels      = data_dict['qa_label']
     print(f"  Raw data shape: {data.shape}  ({len(rhythm_labels)} samples)")
 
-    print("Preprocessing ...")
+    print(f"Preprocessing (chunk_size={args.chunk_size}) ...")
     t0 = time.time()
-    data_processed = preprocess(data)
+    data_processed = preprocess(data, chunk_size=args.chunk_size)
     elapsed = time.time() - t0
     print(f"  Done in {elapsed:.1f}s")
     print(f"  Processed shape: {data_processed.shape}")
