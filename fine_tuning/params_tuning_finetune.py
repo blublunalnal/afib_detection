@@ -246,16 +246,17 @@ def objective(trial):
     for epoch in epoch_bar:
         if ARGS.model_type == 'rhythm':
             _       = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch,
-                                       is_training=True,  max_batches=ARGS.max_batches)
+                                       is_training=True,  max_batches=ARGS.max_batches, verbose=False)
             val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch,
-                                       is_training=False)
+                                       is_training=False, verbose=False)
             metric  = val_m['f1']
         else:
             _       = run_epoch_multitask(model, train_loader, optimizer, DEVICE, epoch,
                                           qa_weight, rhythm_weight, is_training=True,
-                                          max_batches=ARGS.max_batches)
+                                          max_batches=ARGS.max_batches, verbose=False)
             val_m   = run_epoch_multitask(model, val_loader,   optimizer, DEVICE, epoch,
-                                          qa_weight, rhythm_weight, is_training=False)
+                                          qa_weight, rhythm_weight, is_training=False,
+                                          verbose=False)
             metric  = val_m['rhythm_f1']
 
         best_val = max(best_val, metric)
