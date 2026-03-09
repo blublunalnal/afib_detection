@@ -28,6 +28,65 @@ from utils import get_optimal_workers, load_pickle_file
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Default search space
+# ---------------------------------------------------------------------------
+
+DEFAULT_SEARCH_SPACE = {
+    "lr":           {"low": 1e-6, "high": 5e-4, "log": True},
+    "weight_decay": {"low": 1e-3, "high": 0.5,  "log": True},
+    "dropout":      {"low": 0.3,  "high": 0.8},
+    "batch_size":   {"choices": [64, 128, 256]},
+    # multitask-only (ignored for rhythm model)
+    "qa_weight":    {"low": 0.1,  "high": 2.0},
+    "rhythm_weight":{"low": 1.0,  "high": 10.0},
+}
+
+
+def load_search_space(raw) -> dict:
+    """
+    Parse the --search_space argument.
+
+    Accepts:
+      - None            → returns DEFAULT_SEARCH_SPACE
+      - a file path     → reads JSON from that file, merges over defaults
+      - a JSON string   → parses inline, merges over defaults
+
+    Each key maps to either:
+      {"low": float, "high": float}            # suggest_float, linear
+      {"low": float, "high": float, "log": True}  # suggest_float, log-uniform
+      {"choices": [v1, v2, ...]}               # suggest_categorical
+    """
+    if raw is None:
+        return DEFAULT_SEARCH_SPACE.copy()
+
+    path = Path(raw)
+    if path.exists():
+        with open(path) as f:
+            user_space = json.load(f)
+    else:
+        try:
+            user_space = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"--search_space is neither a valid file path nor valid JSON: {e}"
+            )
+
+    merged = DEFAULT_SEARCH_SPACE.copy()
+    merged.update(user_space)
+    return merged
+
+
+def suggest_from_spec(trial, name: str, spec: dict):
+    """Dispatch to the correct Optuna suggest_* call based on spec keys."""
+    if "choices" in spec:
+        return trial.suggest_categorical(name, spec["choices"])
+    low  = spec["low"]
+    high = spec["high"]
+    log  = spec.get("log", False)
+    return trial.suggest_float(name, low, high, log=log)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Optuna hyperparameter tuning for AnyPPG fine-tuning')
 
@@ -41,12 +100,28 @@ def parse_args():
     parser.add_argument("--freeze_backbone", action='store_true',
                         help="Freeze AnyPPG encoder during tuning")
 
+    # Search space
+    parser.add_argument(
+        "--search_space", type=str, default=None,
+        help=(
+            "Custom hyperparameter search space as a JSON string or path to a JSON file. "
+            "Keys not specified fall back to defaults. "
+            "Example (inline): "
+            '\'{"lr": {"low": 1e-5, "high": 1e-3, "log": true}, '
+            '"batch_size": {"choices": [32, 64]}}\' '
+            "Example (file): path/to/search_space.json"
+        ),
+    )
+
     # Optuna settings
     parser.add_argument("--study_name", type=str, default=None,
                         help="Optuna study name (defaults to finetune_{model_type}_study)")
-    parser.add_argument("--n_trials",   type=int, default=30, help="Number of trials")
-    parser.add_argument("--n_epochs",   type=int, default=10, help="Epochs per trial")
-    parser.add_argument("--resume",     action='store_true',  help="Resume existing study")
+    parser.add_argument("--n_trials",    type=int, default=30,  help="Number of trials")
+    parser.add_argument("--n_epochs",    type=int, default=5,   help="Epochs per trial")
+    parser.add_argument("--max_batches", type=int, default=None,
+                        help="Max training batches per epoch (subsample large datasets for faster tuning). "
+                             "e.g. 500 limits each epoch to 500 batches instead of the full ~11k")
+    parser.add_argument("--resume",      action='store_true',  help="Resume existing study")
 
     # Device
     parser.add_argument("--device",      type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -131,19 +206,19 @@ class ProgressBarCallback:
 # ---------------------------------------------------------------------------
 
 def objective(trial):
-    global DEVICE, TRAIN_DS, VAL_DS, NUM_WORKERS, ARGS
+    global DEVICE, TRAIN_DS, VAL_DS, NUM_WORKERS, ARGS, SEARCH_SPACE
 
-    # --- Suggest hyperparameters ---
-    lr           = trial.suggest_float("lr",           1e-5, 1e-2, log=True)
-    weight_decay = trial.suggest_float("weight_decay", 1e-5, 1e-1, log=True)
-    dropout      = trial.suggest_float("dropout",      0.1,  0.6)
-    batch_size   = trial.suggest_categorical("batch_size", [32, 64, 128])
+    # --- Suggest hyperparameters from SEARCH_SPACE ---
+    lr           = suggest_from_spec(trial, "lr",           SEARCH_SPACE["lr"])
+    weight_decay = suggest_from_spec(trial, "weight_decay", SEARCH_SPACE["weight_decay"])
+    dropout      = suggest_from_spec(trial, "dropout",      SEARCH_SPACE["dropout"])
+    batch_size   = suggest_from_spec(trial, "batch_size",   SEARCH_SPACE["batch_size"])
 
     qa_weight     = 1.0
     rhythm_weight = 1.0
     if ARGS.model_type == 'multitask':
-        qa_weight     = trial.suggest_float("qa_weight",     0.1, 2.0)
-        rhythm_weight = trial.suggest_float("rhythm_weight", 1.0, 10.0)
+        qa_weight     = suggest_from_spec(trial, "qa_weight",     SEARCH_SPACE["qa_weight"])
+        rhythm_weight = suggest_from_spec(trial, "rhythm_weight", SEARCH_SPACE["rhythm_weight"])
 
     # --- Model ---
     if ARGS.model_type == 'rhythm':
@@ -163,18 +238,22 @@ def objective(trial):
                               persistent_workers=(NUM_WORKERS > 0))
 
     # --- Training loop ---
-    early_stopper = EarlyStoppingOptuna(patience=3, min_delta=0.001)
+    # Patience=2: overfitting onset was at epoch 2, no need to wait longer
+    early_stopper = EarlyStoppingOptuna(patience=2, min_delta=0.001)
     best_val = 0.0
 
     epoch_bar = tqdm(range(1, ARGS.n_epochs + 1), desc=f"Trial {trial.number}", leave=False)
     for epoch in epoch_bar:
         if ARGS.model_type == 'rhythm':
-            _       = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch, is_training=True)
-            val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch, is_training=False)
+            _       = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch,
+                                       is_training=True,  max_batches=ARGS.max_batches)
+            val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch,
+                                       is_training=False)
             metric  = val_m['f1']
         else:
             _       = run_epoch_multitask(model, train_loader, optimizer, DEVICE, epoch,
-                                          qa_weight, rhythm_weight, is_training=True)
+                                          qa_weight, rhythm_weight, is_training=True,
+                                          max_batches=ARGS.max_batches)
             val_m   = run_epoch_multitask(model, val_loader,   optimizer, DEVICE, epoch,
                                           qa_weight, rhythm_weight, is_training=False)
             metric  = val_m['rhythm_f1']
@@ -290,8 +369,9 @@ if __name__ == '__main__':
     if ARGS.study_name is None:
         ARGS.study_name = f"finetune_{ARGS.model_type}_study"
 
-    DEVICE      = torch.device(ARGS.device)
-    NUM_WORKERS = get_optimal_workers(ARGS.num_workers)
+    DEVICE       = torch.device(ARGS.device)
+    NUM_WORKERS  = get_optimal_workers(ARGS.num_workers)
+    SEARCH_SPACE = load_search_space(ARGS.search_space)
 
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available:  {torch.cuda.is_available()}")
@@ -338,14 +418,17 @@ if __name__ == '__main__':
     print(f"  Trials:        {ARGS.n_trials}")
     print(f"  Epochs/trial:  {ARGS.n_epochs}")
     print(f"  Storage:       {storage_name}")
-    print(f"\nSearchspace:")
-    print(f"  lr:            [1e-5, 1e-2] log-uniform")
-    print(f"  weight_decay:  [1e-5, 1e-1] log-uniform")
-    print(f"  dropout:       [0.1, 0.6]")
-    print(f"  batch_size:    [32, 64, 128]")
-    if ARGS.model_type == 'multitask':
-        print(f"  qa_weight:     [0.1, 2.0]")
-        print(f"  rhythm_weight: [1.0, 10.0]")
+    print(f"\nSearch space:")
+    active_keys = list(SEARCH_SPACE.keys())
+    if ARGS.model_type == 'rhythm':
+        active_keys = [k for k in active_keys if k not in ('qa_weight', 'rhythm_weight')]
+    for k in active_keys:
+        spec = SEARCH_SPACE[k]
+        if "choices" in spec:
+            print(f"  {k:<14} choices={spec['choices']}")
+        else:
+            scale = "log-uniform" if spec.get("log") else "uniform"
+            print(f"  {k:<14} [{spec['low']}, {spec['high']}]  {scale}")
     print("\nStarting optimization...\n")
 
     progress_cb = ProgressBarCallback(ARGS.n_trials)
