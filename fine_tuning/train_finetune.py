@@ -191,8 +191,14 @@ def print_epoch_summary(epoch, train_m, val_m, model_type):
         print(f"   -> Val   Loss: {val_m['loss']:.4f} | Rh F1: {val_m['rhythm_f1']:.4f} | Rh Acc: {val_m['rhythm_acc']:.4f} | QA Acc: {val_m['qa_acc']:.4f} | AUROC: {val_m['auroc']:.4f}")
 
 
-def run_epoch_rhythm(model, dataloader, optimizer, device, epoch, is_training=True, f1_average='macro'):
-    """Single-task epoch runner for FineTuning_rhythm. Labels are integer indices."""
+def run_epoch_rhythm(model, dataloader, optimizer, device, epoch, is_training=True,
+                     f1_average='macro', max_batches=None):
+    """Single-task epoch runner for FineTuning_rhythm. Labels are integer indices.
+
+    Args:
+        max_batches: if set, stop after this many batches (used during Optuna tuning
+                     to subsample large datasets and speed up each trial epoch).
+    """
     model.train() if is_training else model.eval()
     desc = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
 
@@ -203,7 +209,9 @@ def run_epoch_rhythm(model, dataloader, optimizer, device, epoch, is_training=Tr
     criterion = nn.CrossEntropyLoss()
 
     with torch.set_grad_enabled(is_training):
-        for batch in tqdm(dataloader, desc=desc, leave=True, ncols=120):
+        for i, batch in enumerate(tqdm(dataloader, desc=desc, leave=True, ncols=120)):
+            if max_batches is not None and i >= max_batches:
+                break
             data   = batch['data'].to(device)
             target = batch['rhythm_label'].to(device)   # (N,) integer indices
 
@@ -239,8 +247,13 @@ def run_epoch_rhythm(model, dataloader, optimizer, device, epoch, is_training=Tr
 
 
 def run_epoch_multitask(model, dataloader, optimizer, device, epoch,
-                        qa_weight, rhythm_weight, is_training=True, f1_average='macro'):
-    """Multi-task epoch runner for FineTuning_multitask. Labels are integer indices."""
+                        qa_weight, rhythm_weight, is_training=True, f1_average='macro',
+                        max_batches=None):
+    """Multi-task epoch runner for FineTuning_multitask. Labels are integer indices.
+
+    Args:
+        max_batches: if set, stop after this many batches (used during Optuna tuning).
+    """
     model.train() if is_training else model.eval()
     desc = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
 
@@ -254,7 +267,9 @@ def run_epoch_multitask(model, dataloader, optimizer, device, epoch,
     criterion = nn.CrossEntropyLoss()
 
     with torch.set_grad_enabled(is_training):
-        for batch in tqdm(dataloader, desc=desc, leave=True, ncols=120):
+        for i, batch in enumerate(tqdm(dataloader, desc=desc, leave=True, ncols=120)):
+            if max_batches is not None and i >= max_batches:
+                break
             data           = batch['data'].to(device)
             rhythm_target  = batch['rhythm_label'].to(device)  # (N,) integer indices
             qa_target      = batch['qa_label'].to(device)       # (N,) integer indices
