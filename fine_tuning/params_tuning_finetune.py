@@ -99,6 +99,9 @@ def parse_args():
     parser.add_argument("--model_type", required=True, choices=['rhythm', 'multitask'])
     parser.add_argument("--freeze_backbone", action='store_true',
                         help="Freeze AnyPPG encoder during tuning")
+    parser.add_argument("--backbone_lr_scale", type=float, default=0.1,
+                        help="Backbone LR = lr * backbone_lr_scale when backbone is unfrozen "
+                             "(same as train_finetune.py default)")
 
     # Search space
     parser.add_argument(
@@ -226,7 +229,17 @@ def objective(trial):
     else:
         model = FineTuning_multitask(dropout=dropout, freeze=ARGS.freeze_backbone).to(DEVICE)
 
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if ARGS.freeze_backbone:
+        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    else:
+        backbone_params = list(model.encoder.parameters())
+        backbone_ids    = {id(p) for p in backbone_params}
+        head_params     = [p for p in model.parameters() if id(p) not in backbone_ids]
+        backbone_lr     = lr * ARGS.backbone_lr_scale
+        optimizer = optim.Adam([
+            {'params': backbone_params, 'lr': backbone_lr},
+            {'params': head_params,     'lr': lr},
+        ], weight_decay=weight_decay)
 
     # --- DataLoaders ---
     pin = (DEVICE.type == 'cuda')

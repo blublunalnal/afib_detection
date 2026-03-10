@@ -53,11 +53,16 @@ def parse_args():
                         help="Freeze AnyPPG encoder weights (train head only)")
 
     # Hyperparameters
-    parser.add_argument("--batch_size",     type=int,   default=64)
-    parser.add_argument("--epochs",         type=int,   default=50)
-    parser.add_argument("--learning_rate",  type=float, default=1e-4)
-    parser.add_argument("--weight_decay",   type=float, default=0.01)
-    parser.add_argument("--dropout",        type=float, default=0.3)
+    parser.add_argument("--batch_size",         type=int,   default=64)
+    parser.add_argument("--epochs",             type=int,   default=50)
+    parser.add_argument("--learning_rate",      type=float, default=1e-4)
+    parser.add_argument("--weight_decay",       type=float, default=0.01)
+    parser.add_argument("--dropout",            type=float, default=0.3)
+    parser.add_argument("--backbone_lr_scale",  type=float, default=0.1,
+                        help="Backbone LR = learning_rate * backbone_lr_scale (only when backbone is unfrozen). "
+                             "Use a small value (e.g. 0.01-0.1) to prevent catastrophic forgetting.")
+    parser.add_argument("--grad_clip",          type=float, default=1.0,
+                        help="Max gradient norm for clipping (0 = disabled)")
     
     # multitask-only loss weights (ignored by rhythm model)
     parser.add_argument("--qa_loss_weight",     type=float, default=0.2)
@@ -192,7 +197,7 @@ def print_epoch_summary(epoch, train_m, val_m, model_type):
 
 
 def run_epoch_rhythm(model, dataloader, optimizer, device, epoch, is_training=True,
-                     f1_average='macro', max_batches=None, verbose=True):
+                     f1_average='macro', max_batches=None, verbose=True, grad_clip=1.0):
     """Single-task epoch runner for FineTuning_rhythm. Labels are integer indices.
 
     Args:
@@ -224,7 +229,8 @@ def run_epoch_rhythm(model, dataloader, optimizer, device, epoch, is_training=Tr
 
             if is_training:
                 loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+                clip = grad_clip if grad_clip > 0 else float('inf')
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip)
                 total_grad_norm += grad_norm.item()
                 optimizer.step()
 
@@ -249,7 +255,7 @@ def run_epoch_rhythm(model, dataloader, optimizer, device, epoch, is_training=Tr
 
 def run_epoch_multitask(model, dataloader, optimizer, device, epoch,
                         qa_weight, rhythm_weight, is_training=True, f1_average='macro',
-                        max_batches=None, verbose=True):
+                        max_batches=None, verbose=True, grad_clip=1.0):
     """Multi-task epoch runner for FineTuning_multitask. Labels are integer indices.
 
     Args:
@@ -287,7 +293,8 @@ def run_epoch_multitask(model, dataloader, optimizer, device, epoch,
 
             if is_training:
                 loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+                clip = grad_clip if grad_clip > 0 else float('inf')
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip)
                 total_grad_norm += grad_norm.item()
                 optimizer.step()
 
@@ -321,10 +328,12 @@ def run_epoch_multitask(model, dataloader, optimizer, device, epoch,
 def run_one_epoch(model, loader, optimizer, device, epoch, args, is_training):
     """Dispatch to the correct epoch runner based on model_type."""
     if args.model_type == 'rhythm':
-        return run_epoch_rhythm(model, loader, optimizer, device, epoch, is_training=is_training)
+        return run_epoch_rhythm(model, loader, optimizer, device, epoch,
+                                is_training=is_training, grad_clip=args.grad_clip)
     return run_epoch_multitask(
         model, loader, optimizer, device, epoch,
-        args.qa_loss_weight, args.rhythm_loss_weight, is_training=is_training,
+        args.qa_loss_weight, args.rhythm_loss_weight,
+        is_training=is_training, grad_clip=args.grad_clip,
     )
 
 
@@ -378,12 +387,14 @@ def main():
     # --- Tuned params ---
     apply_tuned_params(args)
     history['hyperparameters'] = {
-        'batch_size':      args.batch_size,
-        'learning_rate':   args.learning_rate,
-        'weight_decay':    args.weight_decay,
-        'dropout':         args.dropout,
-        'freeze_backbone': args.freeze_backbone,
-        'model_type':      args.model_type,
+        'batch_size':         args.batch_size,
+        'learning_rate':      args.learning_rate,
+        'weight_decay':       args.weight_decay,
+        'dropout':            args.dropout,
+        'freeze_backbone':    args.freeze_backbone,
+        'model_type':         args.model_type,
+        'backbone_lr_scale':  args.backbone_lr_scale,
+        'grad_clip':          args.grad_clip,
     }
     print(history['hyperparameters'])
 
@@ -428,7 +439,18 @@ def main():
         args.freeze_backbone = saved_hp.get('freeze_backbone', args.freeze_backbone)
 
     model = build_model(args, device)
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    if args.freeze_backbone:
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    else:
+        backbone_params = list(model.encoder.parameters())
+        backbone_ids    = {id(p) for p in backbone_params}
+        head_params     = [p for p in model.parameters() if id(p) not in backbone_ids]
+        backbone_lr     = args.learning_rate * args.backbone_lr_scale
+        optimizer = optim.Adam([
+            {'params': backbone_params, 'lr': backbone_lr},
+            {'params': head_params,     'lr': args.learning_rate},
+        ], weight_decay=args.weight_decay)
+        print(f"Differential LR — backbone: {backbone_lr:.2e}, head: {args.learning_rate:.2e}")
 
     if resume_checkpoint is not None:
         checkpoint = load_checkpoint(resume_checkpoint, model, optimizer, device)
