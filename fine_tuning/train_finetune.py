@@ -431,12 +431,18 @@ def main():
 
     # --- Model & optimizer ---
     print("\nBuilding model...")
+    freeze_changed = False
     if resume_checkpoint is not None:
-        # Restore dropout and freeze setting saved in history
+        # Pre-load to read saved hyperparameters before building model/optimizer
         temp_ckpt = torch.load(resume_checkpoint, map_location=device)
         saved_hp = temp_ckpt.get('history', {}).get('hyperparameters', {})
-        args.dropout        = saved_hp.get('dropout', args.dropout)
-        args.freeze_backbone = saved_hp.get('freeze_backbone', args.freeze_backbone)
+        # Restore dropout (affects model construction); freeze_backbone uses CLI value
+        args.dropout = saved_hp.get('dropout', args.dropout)
+        saved_freeze = saved_hp.get('freeze_backbone', args.freeze_backbone)
+        freeze_changed = (saved_freeze != args.freeze_backbone)
+        if freeze_changed:
+            print(f"  Freeze state changing: {saved_freeze} → {args.freeze_backbone} "
+                  f"— optimizer will be reset (not loaded from checkpoint)")
 
     model = build_model(args, device)
     if args.freeze_backbone:
@@ -453,7 +459,9 @@ def main():
         print(f"Differential LR — backbone: {backbone_lr:.2e}, head: {args.learning_rate:.2e}")
 
     if resume_checkpoint is not None:
-        checkpoint = load_checkpoint(resume_checkpoint, model, optimizer, device)
+        # Skip loading optimizer state when freeze changed — param groups are incompatible
+        opt_to_load = None if freeze_changed else optimizer
+        checkpoint = load_checkpoint(resume_checkpoint, model, opt_to_load, device)
         start_epoch = checkpoint['epoch'] + 1
         history = checkpoint.get('history', history)
 

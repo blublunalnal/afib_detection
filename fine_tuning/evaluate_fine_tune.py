@@ -1,0 +1,129 @@
+import sys
+from pathlib import Path
+
+# Must be set before local imports
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'pytorch'))
+
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import numpy as np
+import pandas as pd
+import argparse
+from tqdm import tqdm
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, average_precision_score
+
+from fine_tuning_models import DeepBeatDataset, FineTuning_rhythm
+from utils import load_pickle_file, load_checkpoint, get_optimal_workers
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Evaluate FineTuning_rhythm Model Performance")
+    parser.add_argument("--test_data_path",  type=str, required=True,
+                        help="Path to test data pickle file")
+    parser.add_argument("--checkpoint_path", type=str, required=True,
+                        help="Path to the saved .pth checkpoint")
+    parser.add_argument("--batch_size",      type=int, default=128)
+    parser.add_argument("--device",          type=str,
+                        default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument("--output_dir",      type=str, default="evaluation_results",
+                        help="Directory to save results")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    device = torch.device(args.device)
+    output_path = Path(args.output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # --- Load checkpoint to read saved hyperparameters ---
+    print(f"Loading checkpoint: {args.checkpoint_path}")
+    checkpoint = torch.load(args.checkpoint_path, map_location=device, weights_only=False)
+
+    # Hyperparameters are stored under history['hyperparameters']
+    saved_hp = checkpoint.get('history', {}).get('hyperparameters', {})
+    dropout        = saved_hp.get('dropout', 0.3)
+    freeze         = saved_hp.get('freeze_backbone', False)
+    preprocessed   = checkpoint.get('history', {}).get('preprocessed', False)
+    print(f"  dropout={dropout}, freeze_backbone={freeze}")
+
+    # --- Load test data ---
+    print(f"\nLoading test data from: {args.test_data_path}")
+    test_dict = load_pickle_file(args.test_data_path)
+
+    is_preprocessed = test_dict.get('preprocessed', preprocessed)
+    if is_preprocessed:
+        print("Preprocessed data detected — skipping resampling and normalization.")
+
+    test_dataset = DeepBeatDataset(
+        test_dict['data'],
+        test_dict['qa_label'],
+        test_dict['rhythm_label'],
+        preprocessed=is_preprocessed,
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=get_optimal_workers(4),
+    )
+
+    # --- Build and load model ---
+    model = FineTuning_rhythm(dropout=dropout, freeze=freeze).to(device)
+    load_checkpoint(args.checkpoint_path, model, optimizer=None, device=device)
+    model.eval()
+
+    # --- Inference ---
+    print("\nRunning inference...")
+    all_preds, all_targets, all_probs = [], [], []
+
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Testing"):
+            data   = batch['data'].to(device)
+            target = batch['rhythm_label']          # integer indices, shape (N,)
+
+            logits = model(data)                    # (N, num_classes)
+            probs  = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+            preds  = torch.argmax(logits, dim=1).cpu().numpy()
+
+            all_preds.extend(preds)
+            all_targets.extend(target.numpy())
+            all_probs.extend(probs)
+
+    all_targets = np.array(all_targets)
+    all_preds   = np.array(all_preds)
+    all_probs   = np.array(all_probs)
+
+    # --- Reports ---
+    print("\n" + "=" * 50)
+    print("RHYTHM CLASSIFICATION PERFORMANCE (AFib vs Normal)")
+    print("=" * 50)
+    print(classification_report(all_targets, all_preds, target_names=['Normal', 'AFib']))
+
+    print("Confusion Matrix (rows=true, cols=pred):")
+    print(confusion_matrix(all_targets, all_preds))
+
+    try:
+        auroc = roc_auc_score(all_targets, all_probs)
+        auprc = average_precision_score(all_targets, all_probs)
+        print(f"\nAUROC: {auroc:.4f}")
+        print(f"AUPRC: {auprc:.4f}")
+    except ValueError as e:
+        print(f"Could not compute AUROC/AUPRC: {e}")
+
+    # --- Save predictions ---
+    results_df = pd.DataFrame({
+        'rh_true': all_targets,
+        'rh_pred': all_preds,
+        'afib_prob': all_probs,
+    })
+    results_csv = output_path / "test_predictions.csv"
+    results_df.to_csv(results_csv, index=False)
+    print(f"\nDetailed predictions saved to: {results_csv}")
+
+
+if __name__ == "__main__":
+    main()
