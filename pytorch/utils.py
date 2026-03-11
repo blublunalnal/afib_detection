@@ -514,7 +514,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, device='cpu'):
         checkpoint dict with all saved information
     """
     print(f"\nLoading checkpoint from: {checkpoint_path}")
-    checkpoint= torch.load(checkpoint_path, map_location=device)
+    checkpoint= torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Load model state
     model.load_state_dict(checkpoint['model_state_dict'])

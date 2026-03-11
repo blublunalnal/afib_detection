@@ -1,21 +1,13 @@
-# refactoring the evalaution code from deepbeat repo for comparision purposes
-
 import pandas as pd
 import numpy as np
 from sklearn import metrics
-from sklearn.metrics import confusion_matrix, confusion_matrix, 
-
-"""
-example usage:
-preds_CE_tuned = organize_results(/path/to/csv , "/path/to/ori_test.pkl")
-output_2 = deepbeat_metrics(preds_CE_tuned , level = 2)
-"""
-
+from sklearn.metrics import confusion_matrix, classification_report, average_precision_score, precision_recall_curve, accuracy_score, confusion_matrix, average_precision_score
+import os
 def episode_metrics_equiv(preds_df, out_message=False):
     """
     Args:
-    preds_df: pd.Datafram containing all 
-    - rhythm predictions 
+    preds_df: pd.Datafram containing all
+    - rhythm predictions
     - QA predictions
     - QA ground truth
     - rhythm ground truth
@@ -65,8 +57,8 @@ def episode_metrics_equiv(preds_df, out_message=False):
 def collecting_individual_metrics_equiv( preds_df, out_message=True):
     """
     Args:
-    preds_df: pd.Datafram containing all 
-    - rhythm predictions 
+    preds_df: pd.Datafram containing all
+    - rhythm predictions
     - QA predictions
     - QA ground truth
     - rhythm ground truth
@@ -93,7 +85,7 @@ def collecting_individual_metrics_equiv( preds_df, out_message=True):
         TPR = TP/(TP+FN) if (TP+FN) > 0.0 else np.nan
         # Specificity or true negative rate
         TNR = TN/(TN+FP) if (TN+FP) > 0.0 else np.nan
-        
+
         # Fall out or false positive rate
         FPR = FP/(FP+TN) if (FP+TN) > 0.0 else np.nan
         # False negative rate
@@ -105,7 +97,7 @@ def collecting_individual_metrics_equiv( preds_df, out_message=True):
         # Area under precision recall curve
         #auprc = metrics.average_precision_score(y_test_truth, rhythm_pID[:,1])
         individual_metrics[i] = [TPR, TNR, FPR,FNR, f1_pos, support ]
-       
+
         if out_message:
             print("PATIENT :", i , '\n')
             print(pd.DataFrame(cf).rename(columns={0: "Predicted Non-AF", 1:" Predicted AF"}, index={0: "True Non-AF", 1:"True AF"}))
@@ -133,7 +125,7 @@ def get_quality_signals(preds_df, level = 2):
   excellent_qa_indx = np.where(preds_df['qa_pred']==level)[0]
   for key in preds_df.keys():
     output[key] = preds_df[key][excellent_qa_indx]
-    
+
   return output
 
 
@@ -141,20 +133,20 @@ def get_quality_signals(preds_df, level = 2):
 def deepbeat_metrics(preds_df, level):
   """
   Args:
-   preds_df: pd.Datafram containing all 
-    - rhythm predictions 
+   preds_df: pd.Datafram containing all
+    - rhythm predictions
     - QA predictions
     - QA ground truth
     - rhythm ground truth
     - IDs
     for all individuals
-  
+
    level: signal quality level
 
-  deepbeat paper 
-  first filters signal based on PREDICTED signal quality, then
+  deepbeat paper
+  first filter signal based on PREDICTED signal quality, then
   calculates 'TPR', 'TNR', 'FPR', 'FNR' at PATIENT level
-             'PPV', 'NPV', 'F1' at EPISODE level
+  calculates 'PPV', 'NPV', 'F1' at EPISODE level
   """
   output = {}
   filtered = get_quality_signals(preds_df, level)
@@ -173,24 +165,40 @@ def deepbeat_metrics(preds_df, level):
   episode_metrics.rename(columns={0:'TPR', 1:'TNR', 2:'PPV', 3:'NPV', 4:"FPR", 5:'FNR', 6:'F1', 7:'total_samples'}, inplace=True)
   for m in ['PPV', 'NPV', 'F1']:
       print('%s: %0.2f' % (m, episode_metrics[m]))
-      output[m] = episode_metrics[m]
+      output[m] = episode_metrics[m].squeeze()
   return output
 
 
 def organize_results(prediction_path, path_to_test_data):
-    """
-    Args:
-        prediction_path (str): .csv file containing the following headers 
-        'rh_true': all ground truth rhythm 
-        'rh_pred': all predicted rhythm 
-        'qa_true': all ground truth qa labels,
-        'qa_pred': all predicted qa labels
-        path_to_test_data (str): path to original test data
+  data_test = np.load(path_to_test_data, allow_pickle=True)
+  preds = pd.read_csv(prediction_path)
+  preds['ID'] = data_test['ID']
+  return preds
 
-    Returns:
-        pd.DataFrame
-    """
-    data_test = np.load(path_to_test_data, allow_pickle=True)
-    preds = pd.read_csv(prediction_path)
-    preds['ID'] = data_test['ID']
-    return preds
+
+
+
+def output_metrics(output0_dict, output1_dict, output2_dict, study_name):
+  df0 = pd.DataFrame([output0_dict])
+  df1 = pd.DataFrame([output1_dict])
+  df2 = pd.DataFrame([output2_dict])
+
+  df0['qa level'] = 0
+  df1['qa level'] = 1
+  df2['qa level'] = 2
+
+  new_df = pd.concat([df0, df1, df2], ignore_index=True)
+  new_df['study'] = study_name
+
+  file_path = "/content/drive/MyDrive/afib/benchmark_metrics.csv"
+
+  if os.path.exists(file_path):
+    existing_df = pd.read_csv(file_path)
+    if 'Unnamed: 0' in existing_df.columns:
+        existing_df = existing_df.drop(columns=['Unnamed: 0'])
+    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    combined_df.to_csv(file_path, index=False)
+    print('append to csv!')
+  else:
+    new_df.to_csv(file_path, index=False)
+    print('create new csv!')
