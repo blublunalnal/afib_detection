@@ -526,7 +526,8 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, device='cpu'):
     print(f"✓ Checkpoint loaded successfully")
     print(f"  - Resumed from epoch: {checkpoint['epoch']}")
     if 'val_metrics' in checkpoint:
-        print(f"  - Last val rhythm acc: {checkpoint['val_metrics'].get('rhythm_acc', 'N/A'):.4f}")
+        acc = checkpoint['val_metrics'].get('rhythm_acc', None)
+        print(f"  - Last val rhythm acc: {acc:.4f}" if acc is not None else "  - Last val rhythm acc: N/A")
     
     return checkpoint
 
