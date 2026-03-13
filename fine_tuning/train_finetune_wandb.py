@@ -22,8 +22,10 @@ from fine_tuning_models import DeepBeatDataset, FineTuning_rhythm, FineTuning_mu
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+import pandas as pd
 from sklearn.metrics import f1_score, accuracy_score
 from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import classification_report, confusion_matrix
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'pytorch'))
 from utils import (
@@ -31,6 +33,7 @@ from utils import (
     save_checkpoint, load_checkpoint, load_pickle_file,
     get_optimal_workers,
 )
+from benchmark_deepbeat import deepbeat_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +94,10 @@ def parse_args():
     parser.add_argument("--early_stopping_metric",    type=str,   default=None,
                         help="Metric for early stopping (defaults to --monitor_metric)")
 
+    # Evaluation
+    parser.add_argument("--test_data_path", type=str, default=None,
+                        help="Path to test pickle file. If provided, evaluation runs after training.")
+
     # Device
     parser.add_argument("--device",      type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument("--num_workers", type=int, default=None)
@@ -102,6 +109,8 @@ def parse_args():
                         help="W&B entity (team or username). Defaults to your default entity.")
     parser.add_argument("--wandb_tags",    type=str, nargs='*', default=None,
                         help="Optional tags for the W&B run (space-separated)")
+    parser.add_argument("--notes",         type=str, default=None,
+                        help="Free-text notes about the run, saved to W&B and the history file")
     parser.add_argument("--wandb_run_id",  type=str, default=None,
                         help="W&B run ID to resume a previous run (for --resume_from)")
     parser.add_argument("--wandb_offline", action='store_true',
@@ -210,6 +219,7 @@ def setup_wandb(args, hyperparams: dict):
         id=args.wandb_run_id,
         resume=resume_mode,
         tags=args.wandb_tags,
+        notes=args.notes,
         config=hyperparams,
         mode=mode,
     )
@@ -453,6 +463,179 @@ def run_one_epoch(model, loader, optimizer, device, epoch, args, is_training):
 
 
 # ---------------------------------------------------------------------------
+# Post-training evaluation
+# ---------------------------------------------------------------------------
+
+def run_evaluation(model, args, device, output_path):
+    """Run inference on the test set and save predictions CSV + W&B metrics."""
+    print("\n" + "=" * 60)
+    print("POST-TRAINING EVALUATION")
+    print("=" * 60)
+
+    # Load best checkpoint if available
+    best_ckpt_path = output_path / f"{args.file_name}_best.pth"
+    if best_ckpt_path.exists():
+        best_ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(best_ckpt['model_state_dict'])
+        print("Loaded best checkpoint for evaluation.")
+
+    model.eval()
+
+    print(f"Loading test data from: {args.test_data_path}")
+    test_dict = load_pickle_file(args.test_data_path)
+    is_preprocessed = test_dict.get('preprocessed', False)
+    if is_preprocessed:
+        print("Preprocessed data detected — skipping resampling and normalization.")
+
+    test_dataset = DeepBeatDataset(
+        test_dict['data'],
+        test_dict['qa_label'],
+        test_dict['rhythm_label'],
+        preprocessed=is_preprocessed,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == 'cuda'),
+    )
+
+    all_rhythm_preds, all_rhythm_targets, all_rhythm_probs = [], [], []
+    all_qa_preds, all_qa_targets = [], []
+
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Evaluating", ncols=120):
+            data          = batch['data'].to(device)
+            rhythm_target = batch['rhythm_label']
+            qa_target     = batch['qa_label']
+
+            if args.model_type == 'rhythm':
+                logits = model(data)
+                probs  = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                preds  = torch.argmax(logits, dim=1).cpu().numpy()
+            else:
+                rhythm_logits, qa_logits = model(data)
+                probs  = F.softmax(rhythm_logits, dim=1)[:, 1].cpu().numpy()
+                preds  = torch.argmax(rhythm_logits, dim=1).cpu().numpy()
+                qa_preds = torch.argmax(qa_logits, dim=1).cpu().numpy()
+                all_qa_preds.extend(qa_preds)
+                all_qa_targets.extend(qa_target.numpy())
+
+            all_rhythm_preds.extend(preds)
+            all_rhythm_targets.extend(rhythm_target.numpy())
+            all_rhythm_probs.extend(probs)
+
+    all_rhythm_targets = np.array(all_rhythm_targets)
+    all_rhythm_preds   = np.array(all_rhythm_preds)
+    all_rhythm_probs   = np.array(all_rhythm_probs)
+
+    # --- Reports ---
+    print("\nRHYTHM CLASSIFICATION PERFORMANCE (AFib vs Normal)")
+    print(classification_report(all_rhythm_targets, all_rhythm_preds, target_names=['Normal', 'AFib']))
+    print("Confusion Matrix (rows=true, cols=pred):")
+    print(confusion_matrix(all_rhythm_targets, all_rhythm_preds))
+
+    auroc = auprc = None
+    try:
+        auroc = roc_auc_score(all_rhythm_targets, all_rhythm_probs)
+        auprc = average_precision_score(all_rhythm_targets, all_rhythm_probs)
+        print(f"\nAUROC: {auroc:.4f}")
+        print(f"AUPRC: {auprc:.4f}")
+    except ValueError as e:
+        print(f"Could not compute AUROC/AUPRC: {e}")
+
+    if args.model_type == 'multitask' and all_qa_targets:
+        all_qa_targets = np.array(all_qa_targets)
+        all_qa_preds   = np.array(all_qa_preds)
+        print("\nQA CLASSIFICATION PERFORMANCE")
+        print(classification_report(all_qa_targets, all_qa_preds))
+
+    # --- Save predictions CSV ---
+    csv_data = {
+        'rh_true':   all_rhythm_targets,
+        'rh_pred':   all_rhythm_preds,
+        'afib_prob': all_rhythm_probs,
+    }
+    if args.model_type == 'multitask' and len(all_qa_preds):
+        csv_data['qa_true'] = np.array(all_qa_targets)
+        csv_data['qa_pred'] = np.array(all_qa_preds)
+
+    results_csv = output_path / "test_predictions.csv"
+    pd.DataFrame(csv_data).to_csv(results_csv, index=False)
+    print(f"\nPredictions saved to: {results_csv}")
+
+    # --- DeepBeat stratified metrics (by predicted signal quality level) ---
+    try:
+        # Mirrors organize_results() using already-loaded test_dict (avoids np.load on .pkl)
+        preds_db = pd.read_csv(results_csv)
+        preds_db['ID'] = test_dict['ID']
+        if 'qa_pred' not in preds_db.columns:
+            preds_db['qa_pred'] = test_dict['qa_label']
+
+        output_0 = deepbeat_metrics(preds_db, level=0)
+        output_1 = deepbeat_metrics(preds_db, level=1)
+        output_2 = deepbeat_metrics(preds_db, level=2)
+
+        # Save per-level metrics CSV
+        rows = []
+        for level, out in [(0, output_0), (1, output_1), (2, output_2)]:
+            row = {'qa_level': level}
+            row.update({k: float(v) for k, v in out.items()})
+            rows.append(row)
+        metrics_df = pd.DataFrame(rows)
+        metrics_csv = output_path / "deepbeat_metrics.csv"
+        metrics_df.to_csv(metrics_csv, index=False)
+        print(f"DeepBeat stratified metrics saved to: {metrics_csv}")
+
+        # Log to W&B
+        db_log = {}
+        for level, out in [(0, output_0), (1, output_1), (2, output_2)]:
+            for metric, val in out.items():
+                db_log[f"DeepBeat/QA{level}/{metric}"] = float(val)
+                wandb.summary[f"deepbeat_qa{level}_{metric.lower()}"] = float(val)
+        wandb.log(db_log)
+
+        db_artifact = wandb.Artifact(
+            name=f"{args.file_name}-deepbeat-metrics",
+            type="evaluation",
+        )
+        db_artifact.add_file(str(metrics_csv))
+        wandb.log_artifact(db_artifact)
+        print("   W&B DeepBeat metrics artifact uploaded.")
+    except Exception as e:
+        print(f"WARNING: DeepBeat stratified metrics failed: {e}")
+
+    # --- Log to W&B ---
+    test_log = {}
+    if auroc is not None:
+        test_log["Test/AUROC"] = auroc
+        test_log["Test/AUPRC"] = auprc
+        wandb.summary["test_auroc"] = auroc
+        wandb.summary["test_auprc"] = auprc
+    rhythm_f1  = f1_score(all_rhythm_targets, all_rhythm_preds, average='macro', zero_division=0)
+    rhythm_acc = accuracy_score(all_rhythm_targets, all_rhythm_preds)
+    test_log["Test/rhythm_f1"]  = rhythm_f1
+    test_log["Test/rhythm_acc"] = rhythm_acc
+    wandb.summary["test_rhythm_f1"]  = rhythm_f1
+    wandb.summary["test_rhythm_acc"] = rhythm_acc
+    if args.model_type == 'multitask' and len(all_qa_preds):
+        qa_acc = accuracy_score(np.array(all_qa_targets), np.array(all_qa_preds))
+        test_log["Test/qa_acc"] = qa_acc
+        wandb.summary["test_qa_acc"] = qa_acc
+    wandb.log(test_log)
+
+    csv_artifact = wandb.Artifact(
+        name=f"{args.file_name}-test-predictions",
+        type="evaluation",
+        metadata={"test_data_path": args.test_data_path},
+    )
+    csv_artifact.add_file(str(results_csv))
+    wandb.log_artifact(csv_artifact)
+    print("   W&B test-predictions artifact uploaded.")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -527,6 +710,8 @@ def main():
         'val_data_path':      args.val_data_path,
     }
     history['hyperparameters'] = hyperparams
+    if args.notes:
+        history['notes'] = args.notes
     print(hyperparams)
 
     # --- W&B init ---
@@ -713,6 +898,42 @@ def main():
 
     with open(output_path / f"{args.file_name}_history.pkl", 'wb') as f:
         pickle.dump(history, f)
+
+    # --- ONNX export ---
+    onnx_path = output_path / f"{args.file_name}.onnx"
+    try:
+        best_ckpt_path = output_path / f"{args.file_name}_best.pth"
+        if best_ckpt_path.exists():
+            best_ckpt = torch.load(best_ckpt_path, map_location=device)
+            model.load_state_dict(best_ckpt['model_state_dict'])
+            print("Loaded best checkpoint for ONNX export.")
+        model.eval()
+        seq_len = 1250 if args.backbone == 'pulseppg' else 3125
+        dummy_input = torch.randn(1, 1, seq_len, device=device)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            input_names=["ppg"],
+            output_names=["rhythm_logits"] if args.model_type == 'rhythm' else ["rhythm_logits", "qa_logits"],
+            dynamic_axes={"ppg": {0: "batch_size"}},
+            opset_version=17,
+        )
+        print(f"ONNX model saved: {onnx_path}")
+        onnx_artifact = wandb.Artifact(
+            name=f"{args.file_name}-onnx",
+            type="model",
+            metadata={"format": "onnx", "opset": 17, "input_shape": [1, seq_len]},
+        )
+        onnx_artifact.add_file(str(onnx_path))
+        wandb.log_artifact(onnx_artifact)
+        print("   W&B ONNX artifact uploaded.")
+    except Exception as e:
+        print(f"WARNING: ONNX export failed: {e}")
+
+    # --- Post-training evaluation ---
+    if args.test_data_path is not None:
+        run_evaluation(model, args, device, output_path)
 
     # Summary metrics visible on the W&B run overview page
     wandb.summary["best_epoch"]              = best_epoch
