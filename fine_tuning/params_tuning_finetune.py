@@ -34,13 +34,19 @@ from utils import get_optimal_workers, load_pickle_file
 # ---------------------------------------------------------------------------
 
 DEFAULT_SEARCH_SPACE = {
-    "lr":           {"low": 1e-6, "high": 5e-4, "log": True},
-    "weight_decay": {"low": 1e-3, "high": 0.5,  "log": True},
-    "dropout":      {"low": 0.3,  "high": 0.8},
-    "batch_size":   {"choices": [64, 128, 256]},
+    # Head LR: keep away from 1e-4 which showed fast train overfit; favour lower end
+    "lr":                {"low": 5e-6,  "high": 2e-4,  "log": True},
+    # Weight decay: push higher to combat the large train/val F1 gap (was 0.0075)
+    "weight_decay":      {"low": 5e-3,  "high": 0.15,  "log": True},
+    # Dropout: bias toward higher values given severe overfitting on 28M param model
+    "dropout":           {"low": 0.3,   "high": 0.7},
+    "batch_size":        {"choices": [128, 256, 512]},
+    # backbone_lr_scale: controls how much the pretrained backbone is updated;
+    # smaller = less catastrophic forgetting, worth searching independently of head LR
+    "backbone_lr_scale": {"low": 0.01,  "high": 0.3,   "log": True},
     # multitask-only (ignored for rhythm model)
-    "qa_weight":    {"low": 0.1,  "high": 2.0},
-    "rhythm_weight":{"low": 1.0,  "high": 10.0},
+    "qa_weight":         {"low": 0.1,   "high": 2.0},
+    "rhythm_weight":     {"low": 1.0,   "high": 10.0},
 }
 
 
@@ -222,10 +228,12 @@ def objective(trial):
     global DEVICE, TRAIN_DS, VAL_DS, NUM_WORKERS, ARGS, SEARCH_SPACE
 
     # --- Suggest hyperparameters from SEARCH_SPACE ---
-    lr           = suggest_from_spec(trial, "lr",           SEARCH_SPACE["lr"])
-    weight_decay = suggest_from_spec(trial, "weight_decay", SEARCH_SPACE["weight_decay"])
-    dropout      = suggest_from_spec(trial, "dropout",      SEARCH_SPACE["dropout"])
-    batch_size   = suggest_from_spec(trial, "batch_size",   SEARCH_SPACE["batch_size"])
+    lr                = suggest_from_spec(trial, "lr",                SEARCH_SPACE["lr"])
+    weight_decay      = suggest_from_spec(trial, "weight_decay",      SEARCH_SPACE["weight_decay"])
+    dropout           = suggest_from_spec(trial, "dropout",           SEARCH_SPACE["dropout"])
+    batch_size        = suggest_from_spec(trial, "batch_size",        SEARCH_SPACE["batch_size"])
+    backbone_lr_scale = suggest_from_spec(trial, "backbone_lr_scale", SEARCH_SPACE["backbone_lr_scale"]) \
+                        if not ARGS.freeze_backbone else ARGS.backbone_lr_scale
 
     qa_weight     = 1.0
     rhythm_weight = 1.0
@@ -242,7 +250,7 @@ def objective(trial):
         'batch_size':      batch_size,
         'backbone':        ARGS.backbone,
         'freeze_backbone': ARGS.freeze_backbone,
-        'backbone_lr_scale': ARGS.backbone_lr_scale,
+        'backbone_lr_scale': backbone_lr_scale,
         'model_type':      ARGS.model_type,
         'n_epochs':        ARGS.n_epochs,
         'max_batches':     ARGS.max_batches,
@@ -275,7 +283,7 @@ def objective(trial):
         backbone_params = list(model.encoder.parameters())
         backbone_ids    = {id(p) for p in backbone_params}
         head_params     = [p for p in model.parameters() if id(p) not in backbone_ids]
-        backbone_lr     = lr * ARGS.backbone_lr_scale
+        backbone_lr     = lr * backbone_lr_scale
         optimizer = optim.Adam([
             {'params': backbone_params, 'lr': backbone_lr},
             {'params': head_params,     'lr': lr},
@@ -497,6 +505,8 @@ if __name__ == '__main__':
     active_keys = list(SEARCH_SPACE.keys())
     if ARGS.model_type == 'rhythm':
         active_keys = [k for k in active_keys if k not in ('qa_weight', 'rhythm_weight')]
+    if ARGS.freeze_backbone:
+        active_keys = [k for k in active_keys if k != 'backbone_lr_scale']
     for k in active_keys:
         spec = SEARCH_SPACE[k]
         if "choices" in spec:
