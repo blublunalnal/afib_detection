@@ -40,7 +40,7 @@ DEFAULT_SEARCH_SPACE = {
     "weight_decay":      {"low": 5e-3,  "high": 0.15,  "log": True},
     # Dropout: bias toward higher values given severe overfitting on 28M param model
     "dropout":           {"low": 0.3,   "high": 0.7},
-    "batch_size":        {"choices": [128, 256, 512]},
+    "batch_size":        {"choices": [64, 128, 256]},
     # backbone_lr_scale: controls how much the pretrained backbone is updated;
     # smaller = less catastrophic forgetting, worth searching independently of head LR
     "backbone_lr_scale": {"low": 0.01,  "high": 0.3,   "log": True},
@@ -141,6 +141,10 @@ def parse_args():
                         help="W&B entity (team or username)")
     parser.add_argument("--wandb_offline", action='store_true',
                         help="Run W&B in offline mode")
+
+    # Training
+    parser.add_argument("--grad_clip", type=float, default=1.0,
+                        help="Max gradient norm for clipping (0 = disabled)")
 
     # Device
     parser.add_argument("--device",      type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -243,21 +247,24 @@ def objective(trial):
 
     # --- W&B run for this trial ---
     wandb_config = {
-        'trial_number':    trial.number,
-        'lr':              lr,
-        'weight_decay':    weight_decay,
-        'dropout':         dropout,
-        'batch_size':      batch_size,
-        'backbone':        ARGS.backbone,
-        'freeze_backbone': ARGS.freeze_backbone,
-        'backbone_lr_scale': backbone_lr_scale,
-        'model_type':      ARGS.model_type,
-        'n_epochs':        ARGS.n_epochs,
-        'max_batches':     ARGS.max_batches,
+        'trial_number':       trial.number,
+        'learning_rate':      lr,
+        'weight_decay':       weight_decay,
+        'dropout':            dropout,
+        'batch_size':         batch_size,
+        'backbone':           ARGS.backbone,
+        'freeze_backbone':    ARGS.freeze_backbone,
+        'backbone_lr_scale':  backbone_lr_scale,
+        'model_type':         ARGS.model_type,
+        'epochs':             ARGS.n_epochs,
+        'grad_clip':          ARGS.grad_clip,
+        'max_batches':        ARGS.max_batches,
+        'qa_loss_weight':     1.0,
+        'rhythm_loss_weight': 1.0,
     }
     if ARGS.model_type == 'multitask':
-        wandb_config['qa_weight']     = qa_weight
-        wandb_config['rhythm_weight'] = rhythm_weight
+        wandb_config['qa_loss_weight']     = qa_weight
+        wandb_config['rhythm_loss_weight'] = rhythm_weight
 
     mode = "offline" if ARGS.wandb_offline else "online"
     run = wandb.init(
@@ -308,28 +315,49 @@ def objective(trial):
         for epoch in epoch_bar:
             if ARGS.model_type == 'rhythm':
                 train_m = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch,
-                                           is_training=True,  max_batches=ARGS.max_batches, verbose=False)
+                                           is_training=True,  max_batches=ARGS.max_batches, verbose=False,
+                                           grad_clip=ARGS.grad_clip)
                 val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch,
-                                           is_training=False, verbose=False)
+                                           is_training=False, verbose=False,
+                                           grad_clip=ARGS.grad_clip)
                 metric  = val_m['f1']
                 wandb.log({
-                    'train/loss': train_m['loss'], 'train/f1': train_m['f1'],
-                    'val/loss':   val_m['loss'],   'val/f1':   val_m['f1'],
-                    'val/auroc':  val_m['auroc'],  'epoch':    epoch,
-                })
+                    "epoch":                     epoch,
+                    "Loss/train":                train_m['loss'],
+                    "Loss/val":                  val_m['loss'],
+                    "Gradients/train_grad_norm": train_m['grad_norm'],
+                    "Val/AUROC":                 val_m['auroc'],
+                    "Val/AUPRC":                 val_m['auprc'],
+                    "F1/train":                  train_m['f1'],
+                    "F1/val":                    val_m['f1'],
+                    "Accuracy/train":            train_m['acc'],
+                    "Accuracy/val":              val_m['acc'],
+                }, step=epoch)
             else:
                 train_m = run_epoch_multitask(model, train_loader, optimizer, DEVICE, epoch,
                                               qa_weight, rhythm_weight, is_training=True,
-                                              max_batches=ARGS.max_batches, verbose=False)
+                                              max_batches=ARGS.max_batches, verbose=False,
+                                              grad_clip=ARGS.grad_clip)
                 val_m   = run_epoch_multitask(model, val_loader,   optimizer, DEVICE, epoch,
                                               qa_weight, rhythm_weight, is_training=False,
-                                              verbose=False)
+                                              verbose=False, grad_clip=ARGS.grad_clip)
                 metric  = val_m['rhythm_f1']
                 wandb.log({
-                    'train/loss': train_m['loss'], 'train/rhythm_f1': train_m['rhythm_f1'],
-                    'val/loss':   val_m['loss'],   'val/rhythm_f1':   val_m['rhythm_f1'],
-                    'val/auroc':  val_m['auroc'],  'epoch':           epoch,
-                })
+                    "epoch":                     epoch,
+                    "Loss/train":                train_m['loss'],
+                    "Loss/val":                  val_m['loss'],
+                    "Gradients/train_grad_norm": train_m['grad_norm'],
+                    "Val/AUROC":                 val_m['auroc'],
+                    "Val/AUPRC":                 val_m['auprc'],
+                    "F1_Rhythm/train":           train_m['rhythm_f1'],
+                    "F1_Rhythm/val":             val_m['rhythm_f1'],
+                    "Accuracy_Rhythm/train":     train_m['rhythm_acc'],
+                    "Accuracy_Rhythm/val":       val_m['rhythm_acc'],
+                    "Accuracy_QA/train":         train_m['qa_acc'],
+                    "Accuracy_QA/val":           val_m['qa_acc'],
+                    "Loss_Rhythm/train":         train_m['rhythm_loss'],
+                    "Loss_QA/train":             train_m['qa_loss'],
+                }, step=epoch)
 
             best_val = max(best_val, metric)
             epoch_bar.set_postfix({'val_f1': f"{metric:.4f}", 'best': f"{best_val:.4f}"})
