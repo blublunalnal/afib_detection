@@ -51,6 +51,7 @@ def parse_args():
                         help="'rhythm': single-task rhythm classifier | 'multitask': rhythm + QA")
 
     # Backbone
+    parser.add_argument("--backbone", type=str, default='anyppg', help='anyppg / pulseppg')
     parser.add_argument("--freeze_backbone", action='store_true',
                         help="Freeze AnyPPG encoder weights (train head only)")
 
@@ -218,8 +219,8 @@ def setup_wandb(args, hyperparams: dict):
 
 def build_model(args, device):
     if args.model_type == 'rhythm':
-        return FineTuning_rhythm(dropout=args.dropout, freeze=args.freeze_backbone).to(device)
-    return FineTuning_multitask(dropout=args.dropout, freeze=args.freeze_backbone).to(device)
+        return FineTuning_rhythm(dropout=args.dropout, backbone=args.backbone, freeze=args.freeze_backbone).to(device)
+    return FineTuning_multitask(dropout=args.dropout, backbone=args.backbone, freeze=args.freeze_backbone).to(device)
 
 
 def default_monitor_metric(model_type):
@@ -504,6 +505,7 @@ def main():
     hyperparams = {
         # Model
         'model_type':         args.model_type,
+        'backbone':           args.backbone,
         'freeze_backbone':    args.freeze_backbone,
         'dropout':            args.dropout,
         # Optimiser
@@ -580,8 +582,9 @@ def main():
     if resume_checkpoint is not None:
         temp_ckpt = torch.load(resume_checkpoint, map_location=device)
         saved_hp = temp_ckpt.get('history', {}).get('hyperparameters', {})
-        args.dropout = saved_hp.get('dropout', args.dropout)
-        saved_freeze = saved_hp.get('freeze_backbone', args.freeze_backbone)
+        args.dropout  = saved_hp.get('dropout', args.dropout)
+        args.backbone = saved_hp.get('backbone', args.backbone)
+        saved_freeze  = saved_hp.get('freeze_backbone', args.freeze_backbone)
         freeze_changed = (saved_freeze != args.freeze_backbone)
         if freeze_changed:
             print(f"  Freeze state changing: {saved_freeze} → {args.freeze_backbone} "

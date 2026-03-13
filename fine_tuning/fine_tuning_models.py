@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import scipy.signal as ss
 from torch.utils.data import Dataset
-
+from ResNet1D_Net import Net
 
 class DeepBeatDataset(Dataset):
     """PyTorch Dataset for DeepBeat data adapted for AnyPPG.
@@ -64,8 +64,13 @@ class BackboneBuilder(nn.Module):
         self._freeze = freeze
         if backbone == 'anyppg':
             encoder, output_size = self._load_anyppg()
-            self.encoder = encoder
-            self.output_size = output_size
+        elif backbone == 'pulseppg':
+            encoder, output_size = self._load_pulseppg()
+        else:
+            raise ValueError("specify a backbone: anyppg / pulseppg")
+        
+        self.encoder = encoder
+        self.output_size = output_size
         self._configure_freeze()
 
     def _configure_freeze(self):
@@ -73,6 +78,30 @@ class BackboneBuilder(nn.Module):
             return
         for param in self.encoder.parameters():
             param.requires_grad = not self._freeze
+    
+    def _load_pulseppg(self):
+        
+        # 1. Initialize the model structure
+        model = Net(
+            in_channels=1,
+            base_filters=128,
+            kernel_size=11,
+            stride=2,
+            groups=1,
+            n_block=12,
+            finalpool='max'
+        )
+
+        weights_path = Path(__file__).parent / "pulseppg_ckpt.pkl"
+        checkpoint = torch.load(weights_path, map_location="cpu")
+
+        # Extract the actual model weights using the "trained_net" key
+        state_dict = checkpoint["net"]
+
+        # Apply the weights to the model
+        model.load_state_dict(state_dict, strict=True)
+        return model, 512
+        
 
     def _load_anyppg(self):
         anyppg_cfg = {
@@ -104,6 +133,7 @@ class BackboneBuilder(nn.Module):
 class FineTuning_rhythm(nn.Module):
     def __init__(self, dropout=0.3, backbone='anyppg', freeze=False):
         super(FineTuning_rhythm, self).__init__()
+        print(f'using backbone: {backbone}')
 
         self.encoder = BackboneBuilder(backbone=backbone, freeze=freeze)  
 
@@ -127,7 +157,7 @@ class FineTuning_rhythm(nn.Module):
 class FineTuning_multitask(nn.Module):
     def __init__(self, dropout=0.3, backbone='anyppg', freeze=False):
         super(FineTuning_multitask, self).__init__()  
-
+        print(f'using backbone: {backbone}')
         self.encoder = BackboneBuilder(backbone=backbone, freeze=freeze)
 
         encoder_out = self.encoder.get_output_size()  # 512

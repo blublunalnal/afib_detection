@@ -97,6 +97,7 @@ def parse_args():
 
     # Model
     parser.add_argument("--model_type", required=True, choices=['rhythm', 'multitask'])
+    parser.add_argument("--backbone", type=str, default='anyppg', help='anyppg / pulseppg')
     parser.add_argument("--freeze_backbone", action='store_true',
                         help="Freeze AnyPPG encoder during tuning")
     parser.add_argument("--backbone_lr_scale", type=float, default=0.1,
@@ -225,9 +226,9 @@ def objective(trial):
 
     # --- Model ---
     if ARGS.model_type == 'rhythm':
-        model = FineTuning_rhythm(dropout=dropout, freeze=ARGS.freeze_backbone).to(DEVICE)
+        model = FineTuning_rhythm(dropout=dropout, backbone=ARGS.backbone, freeze=ARGS.freeze_backbone).to(DEVICE)
     else:
-        model = FineTuning_multitask(dropout=dropout, freeze=ARGS.freeze_backbone).to(DEVICE)
+        model = FineTuning_multitask(dropout=dropout, backbone=ARGS.backbone, freeze=ARGS.freeze_backbone).to(DEVICE)
 
     if ARGS.freeze_backbone:
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)

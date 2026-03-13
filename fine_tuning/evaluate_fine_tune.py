@@ -46,8 +46,9 @@ def main():
     saved_hp = checkpoint.get('history', {}).get('hyperparameters', {})
     dropout        = saved_hp.get('dropout', 0.3)
     freeze         = saved_hp.get('freeze_backbone', False)
+    backbone       = saved_hp.get('backbone', 'anyppg')
     preprocessed   = checkpoint.get('history', {}).get('preprocessed', False)
-    print(f"  dropout={dropout}, freeze_backbone={freeze}")
+    print(f"  dropout={dropout}, freeze_backbone={freeze}, backbone={backbone}")
 
     # --- Load test data ---
     print(f"\nLoading test data from: {args.test_data_path}")
@@ -72,7 +73,7 @@ def main():
     )
 
     # --- Build and load model ---
-    model = FineTuning_rhythm(dropout=dropout, freeze=freeze).to(device)
+    model = FineTuning_rhythm(dropout=dropout, backbone=backbone, freeze=freeze).to(device)
     load_checkpoint(args.checkpoint_path, model, optimizer=None, device=device)
     model.eval()
 
