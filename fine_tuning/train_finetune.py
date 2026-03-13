@@ -436,7 +436,7 @@ def main():
     freeze_changed = False
     if resume_checkpoint is not None:
         # Pre-load to read saved hyperparameters before building model/optimizer
-        temp_ckpt = torch.load(resume_checkpoint, map_location=device)
+        temp_ckpt = torch.load(resume_checkpoint, map_location=device, weights_only=False)
         saved_hp = temp_ckpt.get('history', {}).get('hyperparameters', {})
         # Restore dropout (affects model construction); freeze_backbone uses CLI value
         args.dropout  = saved_hp.get('dropout', args.dropout)

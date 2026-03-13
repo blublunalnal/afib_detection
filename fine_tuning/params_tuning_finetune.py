@@ -14,6 +14,7 @@ import json
 import pickle
 from datetime import datetime
 from tqdm import tqdm
+import wandb
 
 # -- local imports --
 sys.path.insert(0, str(Path(__file__).parent))
@@ -127,6 +128,14 @@ def parse_args():
                              "e.g. 500 limits each epoch to 500 batches instead of the full ~11k")
     parser.add_argument("--resume",      action='store_true',  help="Resume existing study")
 
+    # W&B
+    parser.add_argument("--wandb_project", type=str, default="fine_tune_afib",
+                        help="W&B project name")
+    parser.add_argument("--wandb_entity",  type=str, default=None,
+                        help="W&B entity (team or username)")
+    parser.add_argument("--wandb_offline", action='store_true',
+                        help="Run W&B in offline mode")
+
     # Device
     parser.add_argument("--device",      type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument("--num_workers", type=int, default=None)
@@ -224,6 +233,36 @@ def objective(trial):
         qa_weight     = suggest_from_spec(trial, "qa_weight",     SEARCH_SPACE["qa_weight"])
         rhythm_weight = suggest_from_spec(trial, "rhythm_weight", SEARCH_SPACE["rhythm_weight"])
 
+    # --- W&B run for this trial ---
+    wandb_config = {
+        'trial_number':    trial.number,
+        'lr':              lr,
+        'weight_decay':    weight_decay,
+        'dropout':         dropout,
+        'batch_size':      batch_size,
+        'backbone':        ARGS.backbone,
+        'freeze_backbone': ARGS.freeze_backbone,
+        'backbone_lr_scale': ARGS.backbone_lr_scale,
+        'model_type':      ARGS.model_type,
+        'n_epochs':        ARGS.n_epochs,
+        'max_batches':     ARGS.max_batches,
+    }
+    if ARGS.model_type == 'multitask':
+        wandb_config['qa_weight']     = qa_weight
+        wandb_config['rhythm_weight'] = rhythm_weight
+
+    mode = "offline" if ARGS.wandb_offline else "online"
+    run = wandb.init(
+        project=ARGS.wandb_project,
+        entity=ARGS.wandb_entity,
+        name=f"{ARGS.study_name}_trial_{trial.number:03d}",
+        group=ARGS.study_name,
+        tags=["Optuna"],
+        config=wandb_config,
+        mode=mode,
+        reinit=True,
+    )
+
     # --- Model ---
     if ARGS.model_type == 'rhythm':
         model = FineTuning_rhythm(dropout=dropout, backbone=ARGS.backbone, freeze=ARGS.freeze_backbone).to(DEVICE)
@@ -256,33 +295,53 @@ def objective(trial):
     early_stopper = EarlyStoppingOptuna(patience=2, min_delta=0.001)
     best_val = 0.0
 
-    epoch_bar = tqdm(range(1, ARGS.n_epochs + 1), desc=f"Trial {trial.number}", leave=False)
-    for epoch in epoch_bar:
-        if ARGS.model_type == 'rhythm':
-            _       = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch,
-                                       is_training=True,  max_batches=ARGS.max_batches, verbose=False)
-            val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch,
-                                       is_training=False, verbose=False)
-            metric  = val_m['f1']
-        else:
-            _       = run_epoch_multitask(model, train_loader, optimizer, DEVICE, epoch,
-                                          qa_weight, rhythm_weight, is_training=True,
-                                          max_batches=ARGS.max_batches, verbose=False)
-            val_m   = run_epoch_multitask(model, val_loader,   optimizer, DEVICE, epoch,
-                                          qa_weight, rhythm_weight, is_training=False,
-                                          verbose=False)
-            metric  = val_m['rhythm_f1']
+    try:
+        epoch_bar = tqdm(range(1, ARGS.n_epochs + 1), desc=f"Trial {trial.number}", leave=False)
+        for epoch in epoch_bar:
+            if ARGS.model_type == 'rhythm':
+                train_m = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch,
+                                           is_training=True,  max_batches=ARGS.max_batches, verbose=False)
+                val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch,
+                                           is_training=False, verbose=False)
+                metric  = val_m['f1']
+                wandb.log({
+                    'train/loss': train_m['loss'], 'train/f1': train_m['f1'],
+                    'val/loss':   val_m['loss'],   'val/f1':   val_m['f1'],
+                    'val/auroc':  val_m['auroc'],  'epoch':    epoch,
+                })
+            else:
+                train_m = run_epoch_multitask(model, train_loader, optimizer, DEVICE, epoch,
+                                              qa_weight, rhythm_weight, is_training=True,
+                                              max_batches=ARGS.max_batches, verbose=False)
+                val_m   = run_epoch_multitask(model, val_loader,   optimizer, DEVICE, epoch,
+                                              qa_weight, rhythm_weight, is_training=False,
+                                              verbose=False)
+                metric  = val_m['rhythm_f1']
+                wandb.log({
+                    'train/loss': train_m['loss'], 'train/rhythm_f1': train_m['rhythm_f1'],
+                    'val/loss':   val_m['loss'],   'val/rhythm_f1':   val_m['rhythm_f1'],
+                    'val/auroc':  val_m['auroc'],  'epoch':           epoch,
+                })
 
-        best_val = max(best_val, metric)
-        epoch_bar.set_postfix({'val_f1': f"{metric:.4f}", 'best': f"{best_val:.4f}"})
+            best_val = max(best_val, metric)
+            epoch_bar.set_postfix({'val_f1': f"{metric:.4f}", 'best': f"{best_val:.4f}"})
 
-        # Report to Optuna for pruning
-        trial.report(metric, epoch)
-        if trial.should_prune():
-            raise optuna.exceptions.TrialPruned()
+            # Report to Optuna for pruning
+            trial.report(metric, epoch)
+            if trial.should_prune():
+                wandb.finish(exit_code=1)
+                raise optuna.exceptions.TrialPruned()
 
-        if early_stopper(metric):
-            break
+            if early_stopper(metric):
+                break
+
+        wandb.summary['best_val_f1'] = best_val
+        wandb.finish()
+    except optuna.exceptions.TrialPruned:
+        raise
+    except Exception:
+        wandb.finish(exit_code=1)
+        raise
 
     return best_val
 
@@ -393,6 +452,7 @@ if __name__ == '__main__':
     print(f"Device:          {DEVICE}")
     print(f"Model type:      {ARGS.model_type}")
     print(f"Backbone frozen: {'YES' if ARGS.freeze_backbone else 'NO'}")
+    print(f"W&B project:     {ARGS.wandb_project}")
 
     # Load data once globally — shared across all trials
     print("\n" + "=" * 60)

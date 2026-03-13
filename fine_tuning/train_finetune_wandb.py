@@ -904,7 +904,7 @@ def main():
     try:
         best_ckpt_path = output_path / f"{args.file_name}_best.pth"
         if best_ckpt_path.exists():
-            best_ckpt = torch.load(best_ckpt_path, map_location=device)
+            best_ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
             model.load_state_dict(best_ckpt['model_state_dict'])
             print("Loaded best checkpoint for ONNX export.")
         model.eval()
