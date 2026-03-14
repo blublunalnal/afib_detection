@@ -765,7 +765,7 @@ def main():
     print("\nBuilding model...")
     freeze_changed = False
     if resume_checkpoint is not None:
-        temp_ckpt = torch.load(resume_checkpoint, map_location=device)
+        temp_ckpt = torch.load(resume_checkpoint, map_location=device, weights_only=False)
         saved_hp = temp_ckpt.get('history', {}).get('hyperparameters', {})
         args.dropout  = saved_hp.get('dropout', args.dropout)
         args.backbone = saved_hp.get('backbone', args.backbone)
