@@ -779,13 +779,13 @@ def main():
 
     model = build_model(args, device)
     if args.freeze_backbone:
-        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+        optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     else:
         backbone_params = list(model.encoder.parameters())
         backbone_ids    = {id(p) for p in backbone_params}
         head_params     = [p for p in model.parameters() if id(p) not in backbone_ids]
         backbone_lr     = args.learning_rate * args.backbone_lr_scale
-        optimizer = optim.Adam([
+        optimizer = optim.AdamW([
             {'params': backbone_params, 'lr': backbone_lr},
             {'params': head_params,     'lr': args.learning_rate},
         ], weight_decay=args.weight_decay)

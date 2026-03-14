@@ -110,6 +110,10 @@ def parse_args():
     parser.add_argument("--backbone_lr_scale", type=float, default=0.1,
                         help="Backbone LR = lr * backbone_lr_scale when backbone is unfrozen "
                              "(same as train_finetune.py default)")
+    parser.add_argument("--phase1_checkpoint", type=str, default=None,
+                        help="Path to a Phase 1 (frozen-backbone) .pth checkpoint. "
+                             "When provided, each trial initialises the model from this checkpoint "
+                             "instead of the pretrained backbone weights, enabling proper two-phase HPO.")
 
     # Search space
     parser.add_argument(
@@ -133,6 +137,15 @@ def parse_args():
                         help="Max training batches per epoch (subsample large datasets for faster tuning). "
                              "e.g. 500 limits each epoch to 500 batches instead of the full ~11k")
     parser.add_argument("--resume",      action='store_true',  help="Resume existing study")
+    parser.add_argument("--patience", type=int, default=2,
+                        help="Early stopping patience within each trial (epochs without improvement). "
+                             "Use 2 for Phase 1 (fast head convergence), 3-4 for Phase 2 (slow backbone adaptation).")
+    parser.add_argument("--pruner_startup_trials", type=int, default=8,
+                        help="Number of trials before MedianPruner starts pruning. "
+                             "Needs enough completed trials to compute a reliable median (default: 8).")
+    parser.add_argument("--pruner_warmup_steps", type=int, default=3,
+                        help="Number of epochs to wait before pruning within a trial. "
+                             "Use 3+ for Phase 2 where backbone adaptation is slow (default: 3).")
 
     # W&B
     parser.add_argument("--wandb_project", type=str, default="fine_tune_afib",
@@ -225,6 +238,24 @@ class ProgressBarCallback:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint loading
+# ---------------------------------------------------------------------------
+
+def load_phase1_checkpoint(model, path, device):
+    """
+    Load a Phase 1 checkpoint into the model.
+
+    Supports two formats:
+      - Full training checkpoint: dict with 'model_state_dict' key (saved by train_finetune*.py)
+      - Raw state dict (plain torch.save of model.state_dict())
+    """
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    state_dict = ckpt['model_state_dict'] if isinstance(ckpt, dict) and 'model_state_dict' in ckpt else ckpt
+    model.load_state_dict(state_dict, strict=True)
+    print(f"  Loaded Phase 1 checkpoint: {path}")
+
+
+# ---------------------------------------------------------------------------
 # Objective
 # ---------------------------------------------------------------------------
 
@@ -259,6 +290,7 @@ def objective(trial):
         'epochs':             ARGS.n_epochs,
         'grad_clip':          ARGS.grad_clip,
         'max_batches':        ARGS.max_batches,
+        'phase1_checkpoint':  ARGS.phase1_checkpoint or 'none',
         'qa_loss_weight':     1.0,
         'rhythm_loss_weight': 1.0,
     }
@@ -284,14 +316,18 @@ def objective(trial):
     else:
         model = FineTuning_multitask(dropout=dropout, backbone=ARGS.backbone, freeze=ARGS.freeze_backbone).to(DEVICE)
 
+    # Load Phase 1 checkpoint if provided (two-phase fine-tuning HPO)
+    if ARGS.phase1_checkpoint is not None:
+        load_phase1_checkpoint(model, ARGS.phase1_checkpoint, DEVICE)
+
     if ARGS.freeze_backbone:
-        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     else:
         backbone_params = list(model.encoder.parameters())
         backbone_ids    = {id(p) for p in backbone_params}
         head_params     = [p for p in model.parameters() if id(p) not in backbone_ids]
         backbone_lr     = lr * backbone_lr_scale
-        optimizer = optim.Adam([
+        optimizer = optim.AdamW([
             {'params': backbone_params, 'lr': backbone_lr},
             {'params': head_params,     'lr': lr},
         ], weight_decay=weight_decay)
@@ -306,8 +342,7 @@ def objective(trial):
                               persistent_workers=(NUM_WORKERS > 0))
 
     # --- Training loop ---
-    # Patience=2: overfitting onset was at epoch 2, no need to wait longer
-    early_stopper = EarlyStoppingOptuna(patience=2, min_delta=0.001)
+    early_stopper = EarlyStoppingOptuna(patience=ARGS.patience, min_delta=0.001)
     best_val = 0.0
 
     try:
@@ -484,11 +519,16 @@ if __name__ == '__main__':
     NUM_WORKERS  = get_optimal_workers(ARGS.num_workers)
     SEARCH_SPACE = load_search_space(ARGS.search_space)
 
+    if ARGS.phase1_checkpoint is not None and ARGS.freeze_backbone:
+        raise ValueError("--phase1_checkpoint and --freeze_backbone cannot be used together: "
+                         "Phase 2 HPO requires an unfrozen backbone.")
+
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available:  {torch.cuda.is_available()}")
     print(f"Device:          {DEVICE}")
     print(f"Model type:      {ARGS.model_type}")
     print(f"Backbone frozen: {'YES' if ARGS.freeze_backbone else 'NO'}")
+    print(f"Phase 1 ckpt:    {ARGS.phase1_checkpoint or 'none (starting from pretrained backbone)'}")
     print(f"W&B project:     {ARGS.wandb_project}")
 
     # Load data once globally — shared across all trials
@@ -503,7 +543,9 @@ if __name__ == '__main__':
     storage_name = f"sqlite:///{output_dir / ARGS.study_name}.db"
 
     sampler = optuna.samplers.TPESampler(seed=42)
-    pruner  = optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=2, interval_steps=1)
+    pruner  = optuna.pruners.MedianPruner(n_startup_trials=ARGS.pruner_startup_trials,
+                                          n_warmup_steps=ARGS.pruner_warmup_steps,
+                                          interval_steps=1)
 
     if ARGS.resume:
         print(f"Resuming study: {ARGS.study_name}")
