@@ -395,10 +395,11 @@ def save_study_results(study, output_path, study_name, model_type):
 
     # Build ready_to_use block matching apply_tuned_params() in train_finetune.py
     ready = {
-        'lr':           best.params['lr'],
-        'weight_decay': best.params['weight_decay'],
-        'dropout':      best.params['dropout'],
-        'batch_size':   best.params['batch_size'],
+        'lr':                best.params['lr'],
+        'weight_decay':      best.params['weight_decay'],
+        'dropout':           best.params['dropout'],
+        'batch_size':        best.params['batch_size'],
+        'backbone_lr_scale': best.params.get('backbone_lr_scale', 0.1),
     }
     if model_type == 'multitask':
         ready['qa_weight']     = best.params.get('qa_weight', 1.0)
@@ -507,7 +508,8 @@ if __name__ == '__main__':
     if ARGS.resume:
         print(f"Resuming study: {ARGS.study_name}")
         try:
-            study = optuna.load_study(study_name=ARGS.study_name, storage=storage_name)
+            study = optuna.load_study(study_name=ARGS.study_name, storage=storage_name,
+                                      sampler=sampler)
             print(f"  Resumed with {len(study.trials)} existing trials")
         except KeyError:
             print("  No existing study found — creating new one.")

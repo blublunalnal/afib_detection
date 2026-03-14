@@ -139,10 +139,11 @@ def apply_tuned_params(args):
 
     # Support both top-level and nested 'ready_to_use' format
     rtu = params.get('ready_to_use', params)
-    args.batch_size    = int(rtu.get('batch_size', args.batch_size))
-    args.learning_rate = rtu.get('lr', args.learning_rate)
-    args.weight_decay  = rtu.get('weight_decay', args.weight_decay)
-    args.dropout       = rtu.get('dropout', args.dropout)
+    args.batch_size        = int(rtu.get('batch_size', args.batch_size))
+    args.learning_rate     = rtu.get('lr', args.learning_rate)
+    args.weight_decay      = rtu.get('weight_decay', args.weight_decay)
+    args.dropout           = rtu.get('dropout', args.dropout)
+    args.backbone_lr_scale = rtu.get('backbone_lr_scale', args.backbone_lr_scale)
     if args.model_type == 'multitask':
         args.qa_loss_weight     = rtu.get('qa_weight', args.qa_loss_weight)
         args.rhythm_loss_weight = rtu.get('rhythm_weight', args.rhythm_loss_weight)
@@ -150,13 +151,14 @@ def apply_tuned_params(args):
     print("\n" + "=" * 60)
     print("LOADED TUNED HYPERPARAMETERS")
     print("=" * 60)
-    print(f"  batch_size:    {args.batch_size}")
-    print(f"  learning_rate: {args.learning_rate:.6f}")
-    print(f"  weight_decay:  {args.weight_decay:.6f}")
-    print(f"  dropout:       {args.dropout:.4f}")
+    print(f"  batch_size:        {args.batch_size}")
+    print(f"  learning_rate:     {args.learning_rate:.6f}")
+    print(f"  weight_decay:      {args.weight_decay:.6f}")
+    print(f"  dropout:           {args.dropout:.4f}")
+    print(f"  backbone_lr_scale: {args.backbone_lr_scale:.4f}")
     if args.model_type == 'multitask':
-        print(f"  qa_weight:     {args.qa_loss_weight:.4f}")
-        print(f"  rhythm_weight: {args.rhythm_loss_weight:.4f}")
+        print(f"  qa_weight:         {args.qa_loss_weight:.4f}")
+        print(f"  rhythm_weight:     {args.rhythm_loss_weight:.4f}")
     print("=" * 60 + "\n")
 
 
