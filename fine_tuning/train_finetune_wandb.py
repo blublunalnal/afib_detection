@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-
+import random
 import wandb
 
 # -- local imports --
@@ -645,6 +645,7 @@ def main():
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available:  {torch.cuda.is_available()}")
 
+    random.seed(42)
     torch.manual_seed(42)
     np.random.seed(42)
     if torch.cuda.is_available():

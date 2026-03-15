@@ -15,7 +15,7 @@ import pickle
 from datetime import datetime
 from tqdm import tqdm
 import wandb
-
+import random
 # -- local imports --
 sys.path.insert(0, str(Path(__file__).parent))
 from fine_tuning_models import DeepBeatDataset, FineTuning_rhythm, FineTuning_multitask
@@ -261,6 +261,13 @@ def load_phase1_checkpoint(model, path, device):
 
 def objective(trial):
     global DEVICE, TRAIN_DS, VAL_DS, NUM_WORKERS, ARGS, SEARCH_SPACE
+    
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     # --- Suggest hyperparameters from SEARCH_SPACE ---
     lr                = suggest_from_spec(trial, "lr",                SEARCH_SPACE["lr"])
