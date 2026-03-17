@@ -16,6 +16,7 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_auc_sco
 
 from fine_tuning_models import DeepBeatDataset, FineTuning_rhythm, FineTuning_multitask
 from utils import load_pickle_file, load_checkpoint, get_optimal_workers
+from benchmark_deepbeat import deepbeat_metrics
 
 
 def parse_args():
@@ -46,7 +47,7 @@ def main():
     saved_hp = checkpoint.get('history', {}).get('hyperparameters', {})
     dropout        = saved_hp.get('dropout', 0.3)
     freeze         = saved_hp.get('freeze_backbone', False)
-    backbone       = saved_hp.get('backbone', 'anyppg')
+    backbone       = saved_hp.get('backbone')
     model_type     = saved_hp.get('model_type', 'rhythm')
     preprocessed   = checkpoint.get('history', {}).get('preprocessed', False)
     print(f"  dropout={dropout}, freeze_backbone={freeze}, backbone={backbone}, model_type={model_type}")
@@ -149,6 +150,35 @@ def main():
     results_csv = output_path / "test_predictions.csv"
     pd.DataFrame(csv_data).to_csv(results_csv, index=False)
     print(f"\nDetailed predictions saved to: {results_csv}")
+
+    # --- DeepBeat stratified metrics (by QA signal quality level) ---
+    try:
+        preds_db = pd.read_csv(results_csv)
+        preds_db['ID'] = test_dict['ID']
+        if 'qa_pred' not in preds_db.columns:
+            preds_db['qa_pred'] = test_dict['qa_label']
+
+        output_0 = deepbeat_metrics(preds_db, level=0)
+        output_1 = deepbeat_metrics(preds_db, level=1)
+        output_2 = deepbeat_metrics(preds_db, level=2)
+
+        rows = []
+        for level, out in [(0, output_0), (1, output_1), (2, output_2)]:
+            row = {'qa_level': level}
+            row.update({k: float(v) for k, v in out.items()})
+            rows.append(row)
+
+        metrics_df = pd.DataFrame(rows)
+        print("\n" + "=" * 50)
+        print("DEEPBEAT STRATIFIED METRICS (by QA level)")
+        print("=" * 50)
+        print(metrics_df.to_string(index=False))
+
+        metrics_csv = output_path / "deepbeat_metrics.csv"
+        metrics_df.to_csv(metrics_csv, index=False)
+        print(f"\nDeepBeat metrics saved to: {metrics_csv}")
+    except Exception as e:
+        print(f"WARNING: DeepBeat stratified metrics failed: {e}")
 
 
 if __name__ == "__main__":
