@@ -489,11 +489,13 @@ def run_evaluation(model, args, device, output_path):
     if is_preprocessed:
         print("Preprocessed data detected — skipping resampling and normalization.")
 
+    target_hz = 50 if args.backbone == 'pulseppg' else 125
     test_dataset = DeepBeatDataset(
         test_dict['data'],
         test_dict['qa_label'],
         test_dict['rhythm_label'],
         preprocessed=is_preprocessed,
+        target_hz=target_hz,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -750,8 +752,9 @@ def main():
         "preprocessed":  is_preprocessed,
     }, allow_val_change=True)
 
-    train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r, preprocessed=is_preprocessed)
-    val_dataset   = DeepBeatDataset(data_val,   label_val_q,   label_val_r,   preprocessed=is_preprocessed)
+    target_hz = 50 if args.backbone == 'pulseppg' else 125
+    train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r, preprocessed=is_preprocessed, target_hz=target_hz)
+    val_dataset   = DeepBeatDataset(data_val,   label_val_q,   label_val_r,   preprocessed=is_preprocessed, target_hz=target_hz)
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
