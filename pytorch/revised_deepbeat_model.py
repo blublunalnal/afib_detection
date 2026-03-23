@@ -8,7 +8,7 @@ class revised_DeepBeatModel(nn.Module):
         if dropouts is None:
             dropouts = {
                 'do57': 0.118, 'do58': 0.545, 'do59': 0.568,
-                'do60': 0.672, 'do61': 0.374, 'do62': 0.414,
+                'do60': 0.672, 'do61': 0.374, 'do62': 0.414, 'do63': 0.017,
             }
         
         # revised to follow standard structure
@@ -59,7 +59,9 @@ class revised_DeepBeatModel(nn.Module):
         self.do60 = nn.Dropout(dropouts['do60'])
         self.qa_conv_1 = nn.Sequential(self.conv1d_87, self.bn69, nn.ReLU(), self.do60)
 
-        self.qa_out = nn.Linear(75, 3)   # flatten(25 * 3) -> 3 classes
+        self.dense17 = nn.Linear(75, 175)
+        self.qa_out = nn.Linear(175, 3)
+        self.qa_MLP = nn.Sequential(self.dense17, nn.ReLU(), self.qa_out)
 
         # --- Rhythm Branch (Connected to Dropout 59) ---
         self.conv1d_88 = nn.Conv1d(64, 35, kernel_size=5, stride=3, padding=2)
@@ -72,7 +74,14 @@ class revised_DeepBeatModel(nn.Module):
         self.do62 = nn.Dropout(dropouts['do62'])
         self.rh_conv_2 = nn.Sequential(self.conv1d_89, self.bn71, nn.ReLU(), self.do62)
 
-        self.rhythm_out = nn.Linear(25, 2)  # flatten(25 * 1) -> 2 classes
+        self.conv1d_90 = nn.Conv1d(25, 35, kernel_size=3, padding=1)
+        self.bn72 = nn.BatchNorm1d(35)
+        self.do63 = nn.Dropout(dropouts['do63'])
+        self.rh_conv_3 = nn.Sequential(self.conv1d_90, self.bn72, nn.ReLU(), self.do63)
+
+        self.dense18 = nn.Linear(35, 175)
+        self.rhythm_out = nn.Linear(175, 2)
+        self.rh_MLP = nn.Sequential(self.dense18, nn.ReLU(), self.rhythm_out)
 
     def forward(self, x):
         # Backbone
@@ -88,13 +97,14 @@ class revised_DeepBeatModel(nn.Module):
         # QA Branch
         qa = self.qa_conv_1(shared_feat)
         qa = torch.flatten(qa, 1)   # (batch, 25*3=75)
-        qa_out = self.qa_out(qa)
+        qa_out = self.qa_MLP(qa)
 
         # Rhythm Branch
         rh = self.rh_conv_1(shared_feat)
         rh = self.rh_conv_2(rh)
-        rh = torch.flatten(rh, 1)   # (batch, 25*1=25)
-        rhythm_out = self.rhythm_out(rh)
+        rh = self.rh_conv_3(rh)
+        rh = torch.flatten(rh, 1)   # (batch, 35*1=35)
+        rhythm_out = self.rh_MLP(rh)
         return qa_out, rhythm_out
  
    
