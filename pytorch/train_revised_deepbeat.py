@@ -9,9 +9,16 @@ from pathlib import Path
 from datetime import datetime
 
 import numpy as np
+import pandas as pd
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from sklearn.metrics import (
+    f1_score, accuracy_score,
+    roc_auc_score, average_precision_score,
+    classification_report, confusion_matrix,
+)
 import wandb
 
 from revised_deepbeat_model import revised_DeepBeatModel
@@ -64,6 +71,10 @@ def parse_args():
     # Resume
     parser.add_argument("--resume_from",  type=str, default=None, help="Checkpoint path to resume from")
     parser.add_argument("--resume_epoch", type=int, default=None)
+
+    # Evaluation
+    parser.add_argument("--test_data_path", type=str, default=None,
+                        help="Path to test pickle file. If provided, evaluation runs after training.")
 
     # Device
     parser.add_argument("--device",      type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -129,6 +140,129 @@ def log_epoch_to_wandb(train_m: dict, val_m: dict, epoch: int):
         "val/auroc":          val_m.get('auroc', 0.0),
         "val/auprc":          val_m.get('auprc', 0.0),
     }, step=epoch)
+
+
+# ---------------------------------------------------------------------------
+# Test evaluation
+# ---------------------------------------------------------------------------
+
+def run_evaluation(model, args, device, output_path):
+    """Load best checkpoint, run inference on test set, report metrics + log to W&B."""
+    print("\n" + "=" * 60)
+    print("POST-TRAINING EVALUATION ON TEST SET")
+    print("=" * 60)
+
+    best_ckpt_path = output_path / f"{args.file_name}_best.pth"
+    if best_ckpt_path.exists():
+        best_ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(best_ckpt['model_state_dict'])
+        print("Loaded best checkpoint for evaluation.")
+    else:
+        print("No best checkpoint found — evaluating with current model weights.")
+
+    model.eval()
+
+    print(f"Loading test data from: {args.test_data_path}")
+    test_dict = load_pickle_file(Path(args.test_data_path))
+    test_dataset = DeepBeatDataset(
+        test_dict['data'],
+        test_dict['qa_label'],
+        test_dict['rhythm_label'],
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == 'cuda'),
+        persistent_workers=(args.num_workers > 0),
+    )
+
+    all_rhythm_preds, all_rhythm_targets, all_rhythm_probs = [], [], []
+    all_qa_preds, all_qa_targets = [], []
+
+    with torch.no_grad():
+        for batch in test_loader:
+            data          = batch['data'].to(device)
+            rhythm_target = batch['rhythm_label']
+            qa_target     = batch['qa_label']
+
+            qa_logits, rhythm_logits = model(data)
+
+            probs      = F.softmax(rhythm_logits, dim=1)[:, 1].cpu().numpy()
+            rhythm_pred = torch.argmax(rhythm_logits, dim=1).cpu().numpy()
+            qa_pred     = torch.argmax(qa_logits,     dim=1).cpu().numpy()
+
+            all_rhythm_preds.extend(rhythm_pred)
+            all_rhythm_targets.extend(rhythm_target.numpy())
+            all_rhythm_probs.extend(probs)
+            all_qa_preds.extend(qa_pred)
+            all_qa_targets.extend(qa_target.numpy())
+
+    all_rhythm_targets = np.array(all_rhythm_targets)
+    all_rhythm_preds   = np.array(all_rhythm_preds)
+    all_rhythm_probs   = np.array(all_rhythm_probs)
+    all_qa_targets     = np.array(all_qa_targets)
+    all_qa_preds       = np.array(all_qa_preds)
+
+    # --- Rhythm report ---
+    print("\nRHYTHM CLASSIFICATION (AFib vs Normal)")
+    print(classification_report(all_rhythm_targets, all_rhythm_preds, target_names=['Normal', 'AFib']))
+    print("Confusion Matrix (rows=true, cols=pred):")
+    print(confusion_matrix(all_rhythm_targets, all_rhythm_preds))
+
+    auroc = auprc = None
+    try:
+        auroc = roc_auc_score(all_rhythm_targets, all_rhythm_probs)
+        auprc = average_precision_score(all_rhythm_targets, all_rhythm_probs)
+        print(f"\nAUROC: {auroc:.4f}")
+        print(f"AUPRC: {auprc:.4f}")
+    except ValueError as e:
+        print(f"Could not compute AUROC/AUPRC: {e}")
+
+    # --- QA report ---
+    print("\nQA CLASSIFICATION")
+    print(classification_report(all_qa_targets, all_qa_preds))
+
+    # --- Save predictions CSV ---
+    results_csv = output_path / "test_predictions.csv"
+    pd.DataFrame({
+        'rh_true':   all_rhythm_targets,
+        'rh_pred':   all_rhythm_preds,
+        'afib_prob': all_rhythm_probs,
+        'qa_true':   all_qa_targets,
+        'qa_pred':   all_qa_preds,
+    }).to_csv(results_csv, index=False)
+    print(f"\nPredictions saved to: {results_csv}")
+
+    # --- Log to W&B ---
+    rhythm_f1  = f1_score(all_rhythm_targets, all_rhythm_preds, average='macro', zero_division=0)
+    rhythm_acc = accuracy_score(all_rhythm_targets, all_rhythm_preds)
+    qa_acc     = accuracy_score(all_qa_targets, all_qa_preds)
+
+    test_log = {
+        "Test/rhythm_f1":  rhythm_f1,
+        "Test/rhythm_acc": rhythm_acc,
+        "Test/qa_acc":     qa_acc,
+    }
+    wandb.summary["test_rhythm_f1"]  = rhythm_f1
+    wandb.summary["test_rhythm_acc"] = rhythm_acc
+    wandb.summary["test_qa_acc"]     = qa_acc
+    if auroc is not None:
+        test_log["Test/AUROC"] = auroc
+        test_log["Test/AUPRC"] = auprc
+        wandb.summary["test_auroc"] = auroc
+        wandb.summary["test_auprc"] = auprc
+    wandb.log(test_log)
+
+    csv_artifact = wandb.Artifact(
+        name=f"{args.file_name}-test-predictions",
+        type="evaluation",
+        metadata={"test_data_path": args.test_data_path},
+    )
+    csv_artifact.add_file(str(results_csv))
+    wandb.log_artifact(csv_artifact)
+    print("W&B test-predictions artifact uploaded.")
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +537,10 @@ def main():
     )
     with open(output_path / f"{args.file_name}_history.pkl", 'wb') as f:
         pickle.dump(history, f)
+
+    # ---- Test evaluation ----
+    if args.test_data_path is not None:
+        run_evaluation(model, args, device, output_path)
 
     # ---- W&B model artifact ----
     best_ckpt_path = output_path / f"{args.file_name}_best.pth"
