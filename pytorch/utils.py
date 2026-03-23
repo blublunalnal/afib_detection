@@ -31,8 +31,8 @@ class DeepBeatDataset(Dataset):
         
         # Input is (N, 800, 1) -> Permute to (N, 1, 800)
         self.data = torch.FloatTensor(data).permute(0, 2, 1)
-        self.qa_labels = torch.FloatTensor(qa_labels)
-        self.rhythm_labels = torch.FloatTensor(rhythm_labels)
+        self.qa_labels = torch.LongTensor(qa_labels)
+        self.rhythm_labels = torch.LongTensor(rhythm_labels)
         
     def __len__(self):
         return len(self.data)
@@ -104,25 +104,16 @@ def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhyth
     Args:
         qa_logits: Raw outputs from model (N, 3)
         rhythm_logits: Raw outputs from model (N, 2)
-        targets: Dictionary containing 'qa_label' and 'rhythm_label' (One-hot)
+        targets: Dictionary containing 'qa_label' (0/1/2) and 'rhythm_label' (0/1) as class indices
     """
     qa_target = targets['qa_label'].to(device)
     rhythm_target = targets['rhythm_label'].to(device)
-    
-    # 1. QA Loss: CrossEntropyLoss expects class indices, not one-hot
-    # Convert one-hot (N, 3) -> indices (N,)
-    qa_target_indices = torch.argmax(qa_target, dim=1)
-    qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target_indices)
-    
-    # 2. Rhythm Loss: BCEWithLogitsLoss is more stable than Sigmoid + BCELoss
-    # this is treating Afib and Normal Signals as two independent labels
-    # Takes raw logits (N, 2) and one-hot targets (N, 2)
-    #rhythm_loss = nn.BCEWithLogitsLoss()(rhythm_logits, rhythm_target)
-    rhythm_target_indices = torch.argmax(rhythm_target, dim=1)
-    rhythm_loss = nn.CrossEntropyLoss()(rhythm_logits, rhythm_target_indices)
-    
-    total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss 
-    
+
+    qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target)
+    rhythm_loss = nn.CrossEntropyLoss()(rhythm_logits, rhythm_target)
+
+    total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss
+
     return total_loss, qa_loss, rhythm_loss
 
 
@@ -174,11 +165,8 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             qa_pred = torch.argmax(qa_logits, dim=1).detach().cpu().numpy()
             rhythm_pred = torch.argmax(rhythm_logits, dim=1).detach().cpu().numpy()
             
-            # --- Target Handling ---
-            # Use argmax ONLY if your labels are one-hot encoded. 
-            # If they are already class indices, just use .cpu().numpy()
-            qa_true = torch.argmax(batch['qa_label'], dim=1).detach().cpu().numpy()
-            rhythm_true = torch.argmax(batch['rhythm_label'], dim=1).detach().cpu().numpy()
+            qa_true = batch['qa_label'].detach().cpu().numpy()
+            rhythm_true = batch['rhythm_label'].detach().cpu().numpy()
             
             all_qa_preds.extend(qa_pred)
             all_qa_targets.extend(qa_true)
@@ -206,21 +194,13 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
     return metrics
 
 
-def compute_loss_single_task(logits, targets, device, branch = 'rhythm'):
+def compute_loss_single_task(logits, targets, device, branch='rhythm'):
     """
-    calculate logits for single-task
-       
+    calculate loss for single-task
     """
-    if branch == 'rhythm':
-        target = targets['rhythm_label'].to(device)
-    else: 
-        target = targets['qa_label'].to(device)
-    
-    
-    target_indices = torch.argmax(target, dim=1)
-    loss = nn.CrossEntropyLoss()(logits, target_indices)
-    
-
+    key = 'rhythm_label' if branch == 'rhythm' else 'qa_label'
+    target = targets[key].to(device)
+    loss = nn.CrossEntropyLoss()(logits, target)
     return loss
 
 def run_epoch_single_task(model, dataloader, optimizer, device, epoch, 
@@ -265,10 +245,8 @@ def run_epoch_single_task(model, dataloader, optimizer, device, epoch,
             # Get predictions
             pred_i = torch.argmax(logits, dim=1).detach().cpu().numpy()
             
-            # --- Target Handling ---
-            # Use argmax ONLY if your labels are one-hot encoded. 
-            # If they are already class indices, just use .cpu().numpy()
-            true_i = torch.argmax(batch['rhythm_label'], dim=1).detach().cpu().numpy()
+            key = 'rhythm_label' if branch == 'rhythm' else 'qa_label'
+            true_i = batch[key].detach().cpu().numpy()
             
             all_targets.extend(true_i)
             all_preds.extend(pred_i)
