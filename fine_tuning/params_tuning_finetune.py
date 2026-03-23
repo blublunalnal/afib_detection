@@ -14,7 +14,8 @@ import json
 import pickle
 from datetime import datetime
 from tqdm import tqdm
-
+import wandb
+import random
 # -- local imports --
 sys.path.insert(0, str(Path(__file__).parent))
 from fine_tuning_models import DeepBeatDataset, FineTuning_rhythm, FineTuning_multitask
@@ -33,13 +34,19 @@ from utils import get_optimal_workers, load_pickle_file
 # ---------------------------------------------------------------------------
 
 DEFAULT_SEARCH_SPACE = {
-    "lr":           {"low": 1e-6, "high": 5e-4, "log": True},
-    "weight_decay": {"low": 1e-3, "high": 0.5,  "log": True},
-    "dropout":      {"low": 0.3,  "high": 0.8},
-    "batch_size":   {"choices": [64, 128, 256]},
+    # Head LR: keep away from 1e-4 which showed fast train overfit; favour lower end
+    "lr":                {"low": 5e-6,  "high": 2e-4,  "log": True},
+    # Weight decay: push higher to combat the large train/val F1 gap (was 0.0075)
+    "weight_decay":      {"low": 5e-3,  "high": 0.15,  "log": True},
+    # Dropout: bias toward higher values given severe overfitting on 28M param model
+    "dropout":           {"low": 0.3,   "high": 0.7},
+    "batch_size":        {"choices": [64, 128, 256]},
+    # backbone_lr_scale: controls how much the pretrained backbone is updated;
+    # smaller = less catastrophic forgetting, worth searching independently of head LR
+    "backbone_lr_scale": {"low": 0.01,  "high": 0.3,   "log": True},
     # multitask-only (ignored for rhythm model)
-    "qa_weight":    {"low": 0.1,  "high": 2.0},
-    "rhythm_weight":{"low": 1.0,  "high": 10.0},
+    "qa_weight":         {"low": 0.1,   "high": 2.0},
+    "rhythm_weight":     {"low": 1.0,   "high": 10.0},
 }
 
 
@@ -97,11 +104,16 @@ def parse_args():
 
     # Model
     parser.add_argument("--model_type", required=True, choices=['rhythm', 'multitask'])
+    parser.add_argument("--backbone", type=str, default='anyppg', help='anyppg / pulseppg')
     parser.add_argument("--freeze_backbone", action='store_true',
                         help="Freeze AnyPPG encoder during tuning")
     parser.add_argument("--backbone_lr_scale", type=float, default=0.1,
                         help="Backbone LR = lr * backbone_lr_scale when backbone is unfrozen "
                              "(same as train_finetune.py default)")
+    parser.add_argument("--phase1_checkpoint", type=str, default=None,
+                        help="Path to a Phase 1 (frozen-backbone) .pth checkpoint. "
+                             "When provided, each trial initialises the model from this checkpoint "
+                             "instead of the pretrained backbone weights, enabling proper two-phase HPO.")
 
     # Search space
     parser.add_argument(
@@ -125,6 +137,27 @@ def parse_args():
                         help="Max training batches per epoch (subsample large datasets for faster tuning). "
                              "e.g. 500 limits each epoch to 500 batches instead of the full ~11k")
     parser.add_argument("--resume",      action='store_true',  help="Resume existing study")
+    parser.add_argument("--patience", type=int, default=2,
+                        help="Early stopping patience within each trial (epochs without improvement). "
+                             "Use 2 for Phase 1 (fast head convergence), 3-4 for Phase 2 (slow backbone adaptation).")
+    parser.add_argument("--pruner_startup_trials", type=int, default=8,
+                        help="Number of trials before MedianPruner starts pruning. "
+                             "Needs enough completed trials to compute a reliable median (default: 8).")
+    parser.add_argument("--pruner_warmup_steps", type=int, default=3,
+                        help="Number of epochs to wait before pruning within a trial. "
+                             "Use 3+ for Phase 2 where backbone adaptation is slow (default: 3).")
+
+    # W&B
+    parser.add_argument("--wandb_project", type=str, default="fine_tune_afib",
+                        help="W&B project name")
+    parser.add_argument("--wandb_entity",  type=str, default=None,
+                        help="W&B entity (team or username)")
+    parser.add_argument("--wandb_offline", action='store_true',
+                        help="Run W&B in offline mode")
+
+    # Training
+    parser.add_argument("--grad_clip", type=float, default=1.0,
+                        help="Max gradient norm for clipping (0 = disabled)")
 
     # Device
     parser.add_argument("--device",      type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -205,17 +238,44 @@ class ProgressBarCallback:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint loading
+# ---------------------------------------------------------------------------
+
+def load_phase1_checkpoint(model, path, device):
+    """
+    Load a Phase 1 checkpoint into the model.
+
+    Supports two formats:
+      - Full training checkpoint: dict with 'model_state_dict' key (saved by train_finetune*.py)
+      - Raw state dict (plain torch.save of model.state_dict())
+    """
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    state_dict = ckpt['model_state_dict'] if isinstance(ckpt, dict) and 'model_state_dict' in ckpt else ckpt
+    model.load_state_dict(state_dict, strict=True)
+    print(f"  Loaded Phase 1 checkpoint: {path}")
+
+
+# ---------------------------------------------------------------------------
 # Objective
 # ---------------------------------------------------------------------------
 
 def objective(trial):
     global DEVICE, TRAIN_DS, VAL_DS, NUM_WORKERS, ARGS, SEARCH_SPACE
+    
+    seed = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     # --- Suggest hyperparameters from SEARCH_SPACE ---
-    lr           = suggest_from_spec(trial, "lr",           SEARCH_SPACE["lr"])
-    weight_decay = suggest_from_spec(trial, "weight_decay", SEARCH_SPACE["weight_decay"])
-    dropout      = suggest_from_spec(trial, "dropout",      SEARCH_SPACE["dropout"])
-    batch_size   = suggest_from_spec(trial, "batch_size",   SEARCH_SPACE["batch_size"])
+    lr                = suggest_from_spec(trial, "lr",                SEARCH_SPACE["lr"])
+    weight_decay      = suggest_from_spec(trial, "weight_decay",      SEARCH_SPACE["weight_decay"])
+    dropout           = suggest_from_spec(trial, "dropout",           SEARCH_SPACE["dropout"])
+    batch_size        = suggest_from_spec(trial, "batch_size",        SEARCH_SPACE["batch_size"])
+    backbone_lr_scale = suggest_from_spec(trial, "backbone_lr_scale", SEARCH_SPACE["backbone_lr_scale"]) \
+                        if not ARGS.freeze_backbone else ARGS.backbone_lr_scale
 
     qa_weight     = 1.0
     rhythm_weight = 1.0
@@ -223,20 +283,58 @@ def objective(trial):
         qa_weight     = suggest_from_spec(trial, "qa_weight",     SEARCH_SPACE["qa_weight"])
         rhythm_weight = suggest_from_spec(trial, "rhythm_weight", SEARCH_SPACE["rhythm_weight"])
 
+    # --- W&B run for this trial ---
+    wandb_config = {
+        'trial_number':       trial.number,
+        'learning_rate':      lr,
+        'weight_decay':       weight_decay,
+        'dropout':            dropout,
+        'batch_size':         batch_size,
+        'backbone':           ARGS.backbone,
+        'freeze_backbone':    ARGS.freeze_backbone,
+        'backbone_lr_scale':  backbone_lr_scale,
+        'model_type':         ARGS.model_type,
+        'epochs':             ARGS.n_epochs,
+        'grad_clip':          ARGS.grad_clip,
+        'max_batches':        ARGS.max_batches,
+        'phase1_checkpoint':  ARGS.phase1_checkpoint or 'none',
+        'qa_loss_weight':     1.0,
+        'rhythm_loss_weight': 1.0,
+    }
+    if ARGS.model_type == 'multitask':
+        wandb_config['qa_loss_weight']     = qa_weight
+        wandb_config['rhythm_loss_weight'] = rhythm_weight
+
+    mode = "offline" if ARGS.wandb_offline else "online"
+    run = wandb.init(
+        project=ARGS.wandb_project,
+        entity=ARGS.wandb_entity,
+        name=f"{ARGS.study_name}_trial_{trial.number:03d}",
+        group=ARGS.study_name,
+        tags=["Optuna"],
+        config=wandb_config,
+        mode=mode,
+        reinit=True,
+    )
+
     # --- Model ---
     if ARGS.model_type == 'rhythm':
-        model = FineTuning_rhythm(dropout=dropout, freeze=ARGS.freeze_backbone).to(DEVICE)
+        model = FineTuning_rhythm(dropout=dropout, backbone=ARGS.backbone, freeze=ARGS.freeze_backbone).to(DEVICE)
     else:
-        model = FineTuning_multitask(dropout=dropout, freeze=ARGS.freeze_backbone).to(DEVICE)
+        model = FineTuning_multitask(dropout=dropout, backbone=ARGS.backbone, freeze=ARGS.freeze_backbone).to(DEVICE)
+
+    # Load Phase 1 checkpoint if provided (two-phase fine-tuning HPO)
+    if ARGS.phase1_checkpoint is not None:
+        load_phase1_checkpoint(model, ARGS.phase1_checkpoint, DEVICE)
 
     if ARGS.freeze_backbone:
-        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     else:
         backbone_params = list(model.encoder.parameters())
         backbone_ids    = {id(p) for p in backbone_params}
         head_params     = [p for p in model.parameters() if id(p) not in backbone_ids]
-        backbone_lr     = lr * ARGS.backbone_lr_scale
-        optimizer = optim.Adam([
+        backbone_lr     = lr * backbone_lr_scale
+        optimizer = optim.AdamW([
             {'params': backbone_params, 'lr': backbone_lr},
             {'params': head_params,     'lr': lr},
         ], weight_decay=weight_decay)
@@ -251,37 +349,77 @@ def objective(trial):
                               persistent_workers=(NUM_WORKERS > 0))
 
     # --- Training loop ---
-    # Patience=2: overfitting onset was at epoch 2, no need to wait longer
-    early_stopper = EarlyStoppingOptuna(patience=2, min_delta=0.001)
+    early_stopper = EarlyStoppingOptuna(patience=ARGS.patience, min_delta=0.001)
     best_val = 0.0
 
-    epoch_bar = tqdm(range(1, ARGS.n_epochs + 1), desc=f"Trial {trial.number}", leave=False)
-    for epoch in epoch_bar:
-        if ARGS.model_type == 'rhythm':
-            _       = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch,
-                                       is_training=True,  max_batches=ARGS.max_batches, verbose=False)
-            val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch,
-                                       is_training=False, verbose=False)
-            metric  = val_m['f1']
-        else:
-            _       = run_epoch_multitask(model, train_loader, optimizer, DEVICE, epoch,
-                                          qa_weight, rhythm_weight, is_training=True,
-                                          max_batches=ARGS.max_batches, verbose=False)
-            val_m   = run_epoch_multitask(model, val_loader,   optimizer, DEVICE, epoch,
-                                          qa_weight, rhythm_weight, is_training=False,
-                                          verbose=False)
-            metric  = val_m['rhythm_f1']
+    try:
+        epoch_bar = tqdm(range(1, ARGS.n_epochs + 1), desc=f"Trial {trial.number}", leave=False)
+        for epoch in epoch_bar:
+            if ARGS.model_type == 'rhythm':
+                train_m = run_epoch_rhythm(model, train_loader, optimizer, DEVICE, epoch,
+                                           is_training=True,  max_batches=ARGS.max_batches, verbose=False,
+                                           grad_clip=ARGS.grad_clip)
+                val_m   = run_epoch_rhythm(model, val_loader,   optimizer, DEVICE, epoch,
+                                           is_training=False, verbose=False,
+                                           grad_clip=ARGS.grad_clip)
+                metric  = val_m['f1']
+                wandb.log({
+                    "epoch":                     epoch,
+                    "Loss/train":                train_m['loss'],
+                    "Loss/val":                  val_m['loss'],
+                    "Gradients/train_grad_norm": train_m['grad_norm'],
+                    "Val/AUROC":                 val_m['auroc'],
+                    "Val/AUPRC":                 val_m['auprc'],
+                    "F1/train":                  train_m['f1'],
+                    "F1/val":                    val_m['f1'],
+                    "Accuracy/train":            train_m['acc'],
+                    "Accuracy/val":              val_m['acc'],
+                }, step=epoch)
+            else:
+                train_m = run_epoch_multitask(model, train_loader, optimizer, DEVICE, epoch,
+                                              qa_weight, rhythm_weight, is_training=True,
+                                              max_batches=ARGS.max_batches, verbose=False,
+                                              grad_clip=ARGS.grad_clip)
+                val_m   = run_epoch_multitask(model, val_loader,   optimizer, DEVICE, epoch,
+                                              qa_weight, rhythm_weight, is_training=False,
+                                              verbose=False, grad_clip=ARGS.grad_clip)
+                metric  = val_m['rhythm_f1']
+                wandb.log({
+                    "epoch":                     epoch,
+                    "Loss/train":                train_m['loss'],
+                    "Loss/val":                  val_m['loss'],
+                    "Gradients/train_grad_norm": train_m['grad_norm'],
+                    "Val/AUROC":                 val_m['auroc'],
+                    "Val/AUPRC":                 val_m['auprc'],
+                    "F1_Rhythm/train":           train_m['rhythm_f1'],
+                    "F1_Rhythm/val":             val_m['rhythm_f1'],
+                    "Accuracy_Rhythm/train":     train_m['rhythm_acc'],
+                    "Accuracy_Rhythm/val":       val_m['rhythm_acc'],
+                    "Accuracy_QA/train":         train_m['qa_acc'],
+                    "Accuracy_QA/val":           val_m['qa_acc'],
+                    "Loss_Rhythm/train":         train_m['rhythm_loss'],
+                    "Loss_QA/train":             train_m['qa_loss'],
+                }, step=epoch)
 
-        best_val = max(best_val, metric)
-        epoch_bar.set_postfix({'val_f1': f"{metric:.4f}", 'best': f"{best_val:.4f}"})
+            best_val = max(best_val, metric)
+            epoch_bar.set_postfix({'val_f1': f"{metric:.4f}", 'best': f"{best_val:.4f}"})
 
-        # Report to Optuna for pruning
-        trial.report(metric, epoch)
-        if trial.should_prune():
-            raise optuna.exceptions.TrialPruned()
+            # Report to Optuna for pruning
+            trial.report(metric, epoch)
+            if trial.should_prune():
+                wandb.finish(exit_code=1)
+                raise optuna.exceptions.TrialPruned()
 
-        if early_stopper(metric):
-            break
+            if early_stopper(metric):
+                break
+
+        wandb.summary['best_val_f1'] = best_val
+        wandb.finish()
+    except optuna.exceptions.TrialPruned:
+        raise
+    except Exception:
+        wandb.finish(exit_code=1)
+        raise
 
     return best_val
 
@@ -299,10 +437,11 @@ def save_study_results(study, output_path, study_name, model_type):
 
     # Build ready_to_use block matching apply_tuned_params() in train_finetune.py
     ready = {
-        'lr':           best.params['lr'],
-        'weight_decay': best.params['weight_decay'],
-        'dropout':      best.params['dropout'],
-        'batch_size':   best.params['batch_size'],
+        'lr':                best.params['lr'],
+        'weight_decay':      best.params['weight_decay'],
+        'dropout':           best.params['dropout'],
+        'batch_size':        best.params['batch_size'],
+        'backbone_lr_scale': best.params.get('backbone_lr_scale', 0.1),
     }
     if model_type == 'multitask':
         ready['qa_weight']     = best.params.get('qa_weight', 1.0)
@@ -387,11 +526,17 @@ if __name__ == '__main__':
     NUM_WORKERS  = get_optimal_workers(ARGS.num_workers)
     SEARCH_SPACE = load_search_space(ARGS.search_space)
 
+    if ARGS.phase1_checkpoint is not None and ARGS.freeze_backbone:
+        raise ValueError("--phase1_checkpoint and --freeze_backbone cannot be used together: "
+                         "Phase 2 HPO requires an unfrozen backbone.")
+
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available:  {torch.cuda.is_available()}")
     print(f"Device:          {DEVICE}")
     print(f"Model type:      {ARGS.model_type}")
     print(f"Backbone frozen: {'YES' if ARGS.freeze_backbone else 'NO'}")
+    print(f"Phase 1 ckpt:    {ARGS.phase1_checkpoint or 'none (starting from pretrained backbone)'}")
+    print(f"W&B project:     {ARGS.wandb_project}")
 
     # Load data once globally — shared across all trials
     print("\n" + "=" * 60)
@@ -405,12 +550,15 @@ if __name__ == '__main__':
     storage_name = f"sqlite:///{output_dir / ARGS.study_name}.db"
 
     sampler = optuna.samplers.TPESampler(seed=42)
-    pruner  = optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=2, interval_steps=1)
+    pruner  = optuna.pruners.MedianPruner(n_startup_trials=ARGS.pruner_startup_trials,
+                                          n_warmup_steps=ARGS.pruner_warmup_steps,
+                                          interval_steps=1)
 
     if ARGS.resume:
         print(f"Resuming study: {ARGS.study_name}")
         try:
-            study = optuna.load_study(study_name=ARGS.study_name, storage=storage_name)
+            study = optuna.load_study(study_name=ARGS.study_name, storage=storage_name,
+                                      sampler=sampler)
             print(f"  Resumed with {len(study.trials)} existing trials")
         except KeyError:
             print("  No existing study found — creating new one.")
@@ -436,6 +584,8 @@ if __name__ == '__main__':
     active_keys = list(SEARCH_SPACE.keys())
     if ARGS.model_type == 'rhythm':
         active_keys = [k for k in active_keys if k not in ('qa_weight', 'rhythm_weight')]
+    if ARGS.freeze_backbone:
+        active_keys = [k for k in active_keys if k != 'backbone_lr_scale']
     for k in active_keys:
         spec = SEARCH_SPACE[k]
         if "choices" in spec:

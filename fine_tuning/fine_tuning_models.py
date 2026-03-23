@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import scipy.signal as ss
 from torch.utils.data import Dataset
-
+from ResNet1D_Net import Net
 
 class DeepBeatDataset(Dataset):
     """PyTorch Dataset for DeepBeat data adapted for AnyPPG.
@@ -15,22 +15,22 @@ class DeepBeatDataset(Dataset):
       - Preprocessed data (N, C, L) @ 125Hz — pass preprocessed=True to skip processing
     """
 
-    def __init__(self, data, qa_labels, rhythm_labels, preprocessed=False, chunk_size=512):
+    def __init__(self, data, qa_labels, rhythm_labels, preprocessed=False, chunk_size=512, target_hz=125):
         if preprocessed:
             # Data already resampled and normalized by preprocess.py: shape (N, C, L)
             self.data = torch.FloatTensor(data)
         else:
             # Process in chunks to avoid allocating the full resampled array at once.
-            # Peak RAM per chunk: chunk_size * 800 * 1 (raw) + chunk_size * 3125 * 1 (resampled)
+            # anyppg: target_hz=125 → 3125 samples; pulseppg: target_hz=50 → 1250 samples
             N = data.shape[0]
-            target_L = int(data.shape[1] * (125 / 32))  # 3125
+            target_L = int(data.shape[1] * (target_hz / 32))
             C = data.shape[2]
 
             self.data = torch.empty(N, C, target_L, dtype=torch.float32)
 
             for start in range(0, N, chunk_size):
                 end = min(start + chunk_size, N)
-                chunk = ss.resample_poly(data[start:end], 125, 32, axis=1)  # (chunk, L', C)
+                chunk = ss.resample_poly(data[start:end], target_hz, 32, axis=1)  # (chunk, L', C)
                 chunk_t = torch.FloatTensor(chunk).permute(0, 2, 1)         # (chunk, C, L')
 
                 # Z-score normalization per sample along time axis
@@ -64,8 +64,13 @@ class BackboneBuilder(nn.Module):
         self._freeze = freeze
         if backbone == 'anyppg':
             encoder, output_size = self._load_anyppg()
-            self.encoder = encoder
-            self.output_size = output_size
+        elif backbone == 'pulseppg':
+            encoder, output_size = self._load_pulseppg()
+        else:
+            raise ValueError("specify a backbone: anyppg / pulseppg")
+        
+        self.encoder = encoder
+        self.output_size = output_size
         self._configure_freeze()
 
     def _configure_freeze(self):
@@ -73,6 +78,30 @@ class BackboneBuilder(nn.Module):
             return
         for param in self.encoder.parameters():
             param.requires_grad = not self._freeze
+    
+    def _load_pulseppg(self):
+        
+        # 1. Initialize the model structure
+        model = Net(
+            in_channels=1,
+            base_filters=128,
+            kernel_size=11,
+            stride=2,
+            groups=1,
+            n_block=12,
+            finalpool='max'
+        )
+
+        weights_path = Path(__file__).parent / "pulseppg_ckpt.pkl"
+        checkpoint = torch.load(weights_path, map_location="cpu")
+
+        # Extract the actual model weights using the "trained_net" key
+        state_dict = checkpoint["net"]
+
+        # Apply the weights to the model
+        model.load_state_dict(state_dict, strict=True)
+        return model, 512
+        
 
     def _load_anyppg(self):
         anyppg_cfg = {
@@ -104,6 +133,7 @@ class BackboneBuilder(nn.Module):
 class FineTuning_rhythm(nn.Module):
     def __init__(self, dropout=0.3, backbone='anyppg', freeze=False):
         super(FineTuning_rhythm, self).__init__()
+        print(f'using backbone: {backbone}')
 
         self.encoder = BackboneBuilder(backbone=backbone, freeze=freeze)  
 
@@ -127,7 +157,7 @@ class FineTuning_rhythm(nn.Module):
 class FineTuning_multitask(nn.Module):
     def __init__(self, dropout=0.3, backbone='anyppg', freeze=False):
         super(FineTuning_multitask, self).__init__()  
-
+        print(f'using backbone: {backbone}')
         self.encoder = BackboneBuilder(backbone=backbone, freeze=freeze)
 
         encoder_out = self.encoder.get_output_size()  # 512

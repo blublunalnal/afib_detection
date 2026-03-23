@@ -14,8 +14,9 @@ import argparse
 from tqdm import tqdm
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, average_precision_score
 
-from fine_tuning_models import DeepBeatDataset, FineTuning_rhythm
+from fine_tuning_models import DeepBeatDataset, FineTuning_rhythm, FineTuning_multitask
 from utils import load_pickle_file, load_checkpoint, get_optimal_workers
+from benchmark_deepbeat import deepbeat_metrics
 
 
 def parse_args():
@@ -46,8 +47,10 @@ def main():
     saved_hp = checkpoint.get('history', {}).get('hyperparameters', {})
     dropout        = saved_hp.get('dropout', 0.3)
     freeze         = saved_hp.get('freeze_backbone', False)
+    backbone       = saved_hp.get('backbone')
+    model_type     = saved_hp.get('model_type', 'rhythm')
     preprocessed   = checkpoint.get('history', {}).get('preprocessed', False)
-    print(f"  dropout={dropout}, freeze_backbone={freeze}")
+    print(f"  dropout={dropout}, freeze_backbone={freeze}, backbone={backbone}, model_type={model_type}")
 
     # --- Load test data ---
     print(f"\nLoading test data from: {args.test_data_path}")
@@ -57,11 +60,13 @@ def main():
     if is_preprocessed:
         print("Preprocessed data detected — skipping resampling and normalization.")
 
+    target_hz = 50 if backbone == 'pulseppg' else 125
     test_dataset = DeepBeatDataset(
         test_dict['data'],
         test_dict['qa_label'],
         test_dict['rhythm_label'],
         preprocessed=is_preprocessed,
+        target_hz=target_hz,
     )
 
     test_loader = DataLoader(
@@ -72,25 +77,37 @@ def main():
     )
 
     # --- Build and load model ---
-    model = FineTuning_rhythm(dropout=dropout, freeze=freeze).to(device)
+    if model_type == 'multitask':
+        model = FineTuning_multitask(dropout=dropout, backbone=backbone, freeze=freeze).to(device)
+    else:
+        model = FineTuning_rhythm(dropout=dropout, backbone=backbone, freeze=freeze).to(device)
     load_checkpoint(args.checkpoint_path, model, optimizer=None, device=device)
     model.eval()
 
     # --- Inference ---
     print("\nRunning inference...")
     all_preds, all_targets, all_probs = [], [], []
+    all_qa_preds, all_qa_targets = [], []
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Testing"):
-            data   = batch['data'].to(device)
-            target = batch['rhythm_label']          # integer indices, shape (N,)
+            data          = batch['data'].to(device)
+            rhythm_target = batch['rhythm_label']
+            qa_target     = batch['qa_label']
 
-            logits = model(data)                    # (N, num_classes)
-            probs  = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
-            preds  = torch.argmax(logits, dim=1).cpu().numpy()
+            if model_type == 'multitask':
+                rhythm_logits, qa_logits = model(data)
+                qa_preds = torch.argmax(qa_logits, dim=1).cpu().numpy()
+                all_qa_preds.extend(qa_preds)
+                all_qa_targets.extend(qa_target.numpy())
+            else:
+                rhythm_logits = model(data)
+
+            probs = F.softmax(rhythm_logits, dim=1)[:, 1].cpu().numpy()
+            preds = torch.argmax(rhythm_logits, dim=1).cpu().numpy()
 
             all_preds.extend(preds)
-            all_targets.extend(target.numpy())
+            all_targets.extend(rhythm_target.numpy())
             all_probs.extend(probs)
 
     all_targets = np.array(all_targets)
@@ -114,15 +131,54 @@ def main():
     except ValueError as e:
         print(f"Could not compute AUROC/AUPRC: {e}")
 
+    if model_type == 'multitask' and all_qa_targets:
+        all_qa_targets = np.array(all_qa_targets)
+        all_qa_preds   = np.array(all_qa_preds)
+        print("\nQA CLASSIFICATION PERFORMANCE")
+        print(classification_report(all_qa_targets, all_qa_preds))
+
     # --- Save predictions ---
-    results_df = pd.DataFrame({
+    csv_data = {
         'rh_true': all_targets,
         'rh_pred': all_preds,
         'afib_prob': all_probs,
-    })
+    }
+    if model_type == 'multitask' and len(all_qa_preds):
+        csv_data['qa_true'] = np.array(all_qa_targets)
+        csv_data['qa_pred'] = np.array(all_qa_preds)
+
     results_csv = output_path / "test_predictions.csv"
-    results_df.to_csv(results_csv, index=False)
+    pd.DataFrame(csv_data).to_csv(results_csv, index=False)
     print(f"\nDetailed predictions saved to: {results_csv}")
+
+    # --- DeepBeat stratified metrics (by QA signal quality level) ---
+    try:
+        preds_db = pd.read_csv(results_csv)
+        preds_db['ID'] = test_dict['ID']
+        if 'qa_pred' not in preds_db.columns:
+            preds_db['qa_pred'] = test_dict['qa_label']
+
+        output_0 = deepbeat_metrics(preds_db, level=0)
+        output_1 = deepbeat_metrics(preds_db, level=1)
+        output_2 = deepbeat_metrics(preds_db, level=2)
+
+        rows = []
+        for level, out in [(0, output_0), (1, output_1), (2, output_2)]:
+            row = {'qa_level': level}
+            row.update({k: float(v) for k, v in out.items()})
+            rows.append(row)
+
+        metrics_df = pd.DataFrame(rows)
+        print("\n" + "=" * 50)
+        print("DEEPBEAT STRATIFIED METRICS (by QA level)")
+        print("=" * 50)
+        print(metrics_df.to_string(index=False))
+
+        metrics_csv = output_path / "deepbeat_metrics.csv"
+        metrics_df.to_csv(metrics_csv, index=False)
+        print(f"\nDeepBeat metrics saved to: {metrics_csv}")
+    except Exception as e:
+        print(f"WARNING: DeepBeat stratified metrics failed: {e}")
 
 
 if __name__ == "__main__":

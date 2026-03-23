@@ -173,6 +173,9 @@ def organize_results(prediction_path, path_to_test_data):
   data_test = np.load(path_to_test_data, allow_pickle=True)
   preds = pd.read_csv(prediction_path)
   preds['ID'] = data_test['ID']
+  # for rhythm branch only model
+  if "qa_pred" not in preds.columns:
+    preds['qa_pred'] = data_test['qa_label']
   return preds
 
 
