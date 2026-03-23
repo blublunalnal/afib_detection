@@ -20,8 +20,10 @@ from sklearn.metrics import (
     classification_report, confusion_matrix,
 )
 import wandb
+from tqdm import tqdm
 
 from revised_deepbeat_model import revised_DeepBeatModel
+from benchmark_deepbeat import deepbeat_metrics
 from utils import (
     DeepBeatDataset, EarlyStopping,
     restore_early_stopping_state, apply_tuned_params,
@@ -54,12 +56,28 @@ def parse_args():
     parser.add_argument("--epochs",               type=int,   default=100)
     parser.add_argument("--learning_rate",        type=float, default=0.001)
     parser.add_argument("--weight_decay",         type=float, default=0.01)
-    parser.add_argument("--qa_loss_weight",       type=float, default=0.2)
-    parser.add_argument("--rhythm_loss_weight",   type=float, default=5.0)
+    parser.add_argument("--qa_loss_weight",        type=float, default=0.2)
+    parser.add_argument("--rhythm_loss_weight",    type=float, default=5.0)
+    parser.add_argument("--rhythm_class_weights",  type=float, nargs=2, default=None,
+                        metavar=('W_NORMAL', 'W_AFIB'),
+                        help="Class weights for rhythm loss, e.g. --rhythm_class_weights 1.0 3.0")
+    parser.add_argument("--grad_clip",             type=float, default=1.0,
+                        help="Max gradient norm for clipping (default: 1.0, set 0 to disable)")
 
     # Checkpointing
     parser.add_argument("--monitor_metric", type=str, default='rhythm_f1',
                         choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1'])
+
+    # LR Scheduler
+    parser.add_argument("--scheduler",        type=str, default='plateau',
+                        choices=['none', 'plateau', 'cosine'],
+                        help="LR scheduler type (default: plateau)")
+    parser.add_argument("--lr_factor",        type=float, default=0.5,
+                        help="Plateau: factor to reduce LR by (default: 0.5)")
+    parser.add_argument("--lr_patience",      type=int,   default=7,
+                        help="Plateau: epochs with no improvement before reducing LR (default: 7)")
+    parser.add_argument("--lr_min",           type=float, default=1e-6,
+                        help="Minimum LR for plateau/cosine scheduler (default: 1e-6)")
 
     # Early stopping
     parser.add_argument("--early_stopping",            action='store_true')
@@ -124,8 +142,8 @@ def setup_wandb(args, hyperparams: dict):
     return run
 
 
-def log_epoch_to_wandb(train_m: dict, val_m: dict, epoch: int):
-    wandb.log({
+def log_epoch_to_wandb(train_m: dict, val_m: dict, epoch: int, lr: float = None):
+    log_dict = {
         "epoch":              epoch,
         "train/loss":         train_m['loss'],
         "train/rhythm_acc":   train_m['rhythm_acc'],
@@ -138,7 +156,10 @@ def log_epoch_to_wandb(train_m: dict, val_m: dict, epoch: int):
         "val/rhythm_f1":      val_m['rhythm_f1'],
         "val/auroc":          val_m.get('auroc', 0.0),
         "val/auprc":          val_m.get('auprc', 0.0),
-    }, step=epoch)
+    }
+    if lr is not None:
+        log_dict["train/lr"] = lr
+    wandb.log(log_dict, step=epoch)
 
 
 # ---------------------------------------------------------------------------
@@ -181,14 +202,14 @@ def run_evaluation(model, args, device, output_path):
     all_qa_preds, all_qa_targets = [], []
 
     with torch.no_grad():
-        for batch in test_loader:
+        for batch in tqdm(test_loader, desc="Evaluating", ncols=120):
             data          = batch['data'].to(device)
             rhythm_target = batch['rhythm_label']
             qa_target     = batch['qa_label']
 
             qa_logits, rhythm_logits = model(data)
 
-            probs      = F.softmax(rhythm_logits, dim=1)[:, 1].cpu().numpy()
+            probs       = F.softmax(rhythm_logits, dim=1)[:, 1].cpu().numpy()
             rhythm_pred = torch.argmax(rhythm_logits, dim=1).cpu().numpy()
             qa_pred     = torch.argmax(qa_logits,     dim=1).cpu().numpy()
 
@@ -205,7 +226,7 @@ def run_evaluation(model, args, device, output_path):
     all_qa_preds       = np.array(all_qa_preds)
 
     # --- Rhythm report ---
-    print("\nRHYTHM CLASSIFICATION (AFib vs Normal)")
+    print("\nRHYTHM CLASSIFICATION PERFORMANCE (AFib vs Normal)")
     print(classification_report(all_rhythm_targets, all_rhythm_preds, target_names=['Normal', 'AFib']))
     print("Confusion Matrix (rows=true, cols=pred):")
     print(confusion_matrix(all_rhythm_targets, all_rhythm_preds))
@@ -220,19 +241,54 @@ def run_evaluation(model, args, device, output_path):
         print(f"Could not compute AUROC/AUPRC: {e}")
 
     # --- QA report ---
-    print("\nQA CLASSIFICATION")
+    print("\nQA CLASSIFICATION PERFORMANCE")
     print(classification_report(all_qa_targets, all_qa_preds))
 
     # --- Save predictions CSV ---
     results_csv = output_path / "test_predictions.csv"
-    pd.DataFrame({
+    preds_db = pd.DataFrame({
         'rh_true':   all_rhythm_targets,
         'rh_pred':   all_rhythm_preds,
         'afib_prob': all_rhythm_probs,
         'qa_true':   all_qa_targets,
         'qa_pred':   all_qa_preds,
-    }).to_csv(results_csv, index=False)
+    })
+    if 'ID' in test_dict:
+        preds_db['ID'] = test_dict['ID']
+    preds_db.to_csv(results_csv, index=False)
     print(f"\nPredictions saved to: {results_csv}")
+
+    # --- DeepBeat stratified metrics (by predicted signal quality level) ---
+    try:
+        output_0 = deepbeat_metrics(preds_db, level=0)
+        output_1 = deepbeat_metrics(preds_db, level=1)
+        output_2 = deepbeat_metrics(preds_db, level=2)
+
+        rows = []
+        for level, out in [(0, output_0), (1, output_1), (2, output_2)]:
+            row = {'qa_level': level}
+            row.update({k: float(v) for k, v in out.items()})
+            rows.append(row)
+        metrics_csv = output_path / "deepbeat_metrics.csv"
+        pd.DataFrame(rows).to_csv(metrics_csv, index=False)
+        print(f"DeepBeat stratified metrics saved to: {metrics_csv}")
+
+        db_log = {}
+        for level, out in [(0, output_0), (1, output_1), (2, output_2)]:
+            for metric, val in out.items():
+                db_log[f"DeepBeat/QA{level}/{metric}"] = float(val)
+                wandb.summary[f"deepbeat_qa{level}_{metric.lower()}"] = float(val)
+        wandb.log(db_log)
+
+        db_artifact = wandb.Artifact(
+            name=f"{args.file_name}-deepbeat-metrics",
+            type="evaluation",
+        )
+        db_artifact.add_file(str(metrics_csv))
+        wandb.log_artifact(db_artifact)
+        print("   W&B DeepBeat metrics artifact uploaded.")
+    except Exception as e:
+        print(f"WARNING: DeepBeat stratified metrics failed: {e}")
 
     # --- Log to W&B ---
     rhythm_f1  = f1_score(all_rhythm_targets, all_rhythm_preds, average='macro', zero_division=0)
@@ -261,7 +317,7 @@ def run_evaluation(model, args, device, output_path):
     )
     csv_artifact.add_file(str(results_csv))
     wandb.log_artifact(csv_artifact)
-    print("W&B test-predictions artifact uploaded.")
+    print("   W&B test-predictions artifact uploaded.")
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +372,12 @@ def main():
         'rhythm_loss_weight': args.rhythm_loss_weight,
         'monitor_metric':     args.monitor_metric,
         'dropouts':           tuned_dropouts if tuned_dropouts is not None else 'default',
+        'scheduler':               args.scheduler,
+        'lr_factor':               args.lr_factor,
+        'lr_patience':             args.lr_patience,
+        'lr_min':                  args.lr_min,
+        'grad_clip':               args.grad_clip,
+        'rhythm_class_weights':    args.rhythm_class_weights,
     }
     history['hyperparameters'] = hyperparams
     print(hyperparams)
@@ -357,6 +419,16 @@ def main():
     train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
     val_dataset   = DeepBeatDataset(data_val,   label_val_q,   label_val_r)
 
+    # ---- Rhythm class weights ----
+    if args.rhythm_class_weights is not None:
+        rhythm_class_weights = torch.FloatTensor(args.rhythm_class_weights)
+        print(f"Using manual rhythm class weights: Normal={args.rhythm_class_weights[0]}, AFib={args.rhythm_class_weights[1]}")
+    else:
+        counts = np.bincount(label_train_r)
+        weights = len(label_train_r) / (len(counts) * counts.astype(float))
+        rhythm_class_weights = torch.FloatTensor(weights)
+        print(f"Auto rhythm class weights from training data: {counts} → weights {weights.round(3)}")
+
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers,
@@ -382,8 +454,28 @@ def main():
     model = revised_DeepBeatModel(dropouts=tuned_dropouts).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
+    # ---- LR Scheduler ----
+    scheduler = None
+    if args.scheduler == 'plateau':
+        sched_mode = 'min' if args.monitor_metric == 'loss' else 'max'
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=sched_mode,
+            factor=args.lr_factor,
+            patience=args.lr_patience,
+            min_lr=args.lr_min,
+        )
+        print(f"LR scheduler: ReduceLROnPlateau (mode={sched_mode}, factor={args.lr_factor}, patience={args.lr_patience})")
+    elif args.scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.epochs,
+            eta_min=args.lr_min,
+        )
+        print(f"LR scheduler: CosineAnnealingLR (T_max={args.epochs}, eta_min={args.lr_min})")
+
     if resume_checkpoint is not None:
-        checkpoint = load_checkpoint(resume_checkpoint, model, optimizer, device)
+        checkpoint = load_checkpoint(resume_checkpoint, model, optimizer, device, scheduler=scheduler)
         start_epoch = checkpoint['epoch'] + 1
         history = checkpoint.get('history', history)
 
@@ -433,20 +525,31 @@ def main():
     # ---- Training loop ----
     print("Starting training...")
     epoch = start_epoch
+    val_m = {}   # guard against NameError if training fails before first val epoch
     try:
         for epoch in range(start_epoch, args.epochs + 1):
             train_m = run_epoch(
                 model, train_loader, optimizer, device, epoch,
                 args.qa_loss_weight, args.rhythm_loss_weight,
-                is_training=True, progress_bar=True,
+                is_training=True, progress_bar=True, grad_clip=args.grad_clip,
+                rhythm_class_weights=rhythm_class_weights,
             )
             val_m = run_epoch(
                 model, val_loader, optimizer, device, epoch,
                 args.qa_loss_weight, args.rhythm_loss_weight,
                 is_training=False, progress_bar=True,
+                rhythm_class_weights=rhythm_class_weights,
             )
 
-            log_epoch_to_wandb(train_m, val_m, epoch)
+            # Step LR scheduler
+            if scheduler is not None:
+                if args.scheduler == 'plateau':
+                    scheduler.step(val_m[args.monitor_metric])
+                else:
+                    scheduler.step()
+            current_lr = optimizer.param_groups[0]['lr']
+
+            log_epoch_to_wandb(train_m, val_m, epoch, lr=current_lr)
 
             history['loss'].append(train_m['loss'])
             history['val_loss'].append(val_m['loss'])
@@ -487,7 +590,7 @@ def main():
                 save_checkpoint(
                     epoch, model, optimizer, val_m, history, args,
                     output_path, tuned_dropouts, early_stopper,
-                    checkpoint_type='best',
+                    checkpoint_type='best', scheduler=scheduler,
                 )
                 print(f"   * New best saved ({monitor_metric}: {best_metric_val:.4f})")
                 wandb.run.summary[f'best_val_{monitor_metric}'] = best_metric_val
@@ -498,7 +601,7 @@ def main():
                 save_checkpoint(
                     epoch, model, optimizer, val_m, history, args,
                     output_path, tuned_dropouts, early_stopper,
-                    checkpoint_type='progress',
+                    checkpoint_type='progress', scheduler=scheduler,
                 )
                 print(f"   Progress checkpoint saved (epoch {epoch})")
 
@@ -509,7 +612,7 @@ def main():
         save_checkpoint(
             epoch, model, optimizer, val_m, history, args,
             output_path, tuned_dropouts, early_stopper,
-            checkpoint_type='interrupted',
+            checkpoint_type='interrupted', scheduler=scheduler,
         )
         print(f"Interrupted checkpoint saved at epoch {epoch}")
 
@@ -521,7 +624,7 @@ def main():
             save_checkpoint(
                 epoch, model, optimizer, val_m, history, args,
                 output_path, tuned_dropouts, early_stopper,
-                checkpoint_type='error',
+                checkpoint_type='error', scheduler=scheduler,
             )
         except Exception:
             print("Could not save error checkpoint")
@@ -531,7 +634,7 @@ def main():
     save_checkpoint(
         epoch, model, optimizer, val_m, history, args,
         output_path, tuned_dropouts, early_stopper,
-        checkpoint_type='final',
+        checkpoint_type='final', scheduler=scheduler,
     )
     with open(output_path / f"{args.file_name}_history.pkl", 'wb') as f:
         pickle.dump(history, f)
