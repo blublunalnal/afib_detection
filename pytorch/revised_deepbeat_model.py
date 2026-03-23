@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class DeepBeatModel(nn.Module):
+class revised_DeepBeatModel(nn.Module):
     def __init__(self, dropouts=None):
-        super(DeepBeatModel, self).__init__()
+        super(revised_DeepBeatModel, self).__init__()
         
         if dropouts is None:
             dropouts = {
@@ -83,7 +83,7 @@ class DeepBeatModel(nn.Module):
         
         self.dense18 = nn.Linear(35, 175)
         self.rhythm_out = nn.Linear(175, 2)
-        self.rh_MLP = nn.Sequential(self.dense18, nn.ReLU, self.rh_MLP)
+        self.rh_MLP = nn.Sequential(self.dense18, nn.ReLU(), self.rhythm_out)
 
     def forward(self, x):
         # Backbone
