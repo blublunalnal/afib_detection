@@ -108,7 +108,6 @@ def setup_wandb(args, hyperparams: dict):
 
     tags = list(args.wandb_tags) if args.wandb_tags else []
     tags.append("revised-deepbeat")
-    tags.append(args.training_choice)
 
     run = wandb.init(
         project=args.wandb_project,
@@ -315,7 +314,6 @@ def main():
         'weight_decay':       args.weight_decay,
         'qa_loss_weight':     args.qa_loss_weight,
         'rhythm_loss_weight': args.rhythm_loss_weight,
-        'training_choice':    args.training_choice,
         'monitor_metric':     args.monitor_metric,
         'dropouts':           tuned_dropouts if tuned_dropouts is not None else 'default',
     }
