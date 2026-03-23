@@ -23,6 +23,7 @@ import wandb
 from tqdm import tqdm
 
 from revised_deepbeat_model import revised_DeepBeatModel
+from deepbeat_model import DeepBeatModel
 from benchmark_deepbeat import deepbeat_metrics
 from utils import (
     DeepBeatDataset, EarlyStopping,
@@ -46,6 +47,9 @@ def parse_args():
 
     # Experiment
     parser.add_argument("--file_name",        required=True, help="Run name used for file/folder names")
+    parser.add_argument("--model",            type=str, default='revised_deepbeat',
+                        choices=['revised_deepbeat', 'deepbeat'],
+                        help="Model architecture to train (default: revised_deepbeat)")
 
     # Tuned params
     parser.add_argument("--tuned_params_path", type=str, default=None,
@@ -125,7 +129,7 @@ def setup_wandb(args, hyperparams: dict):
     resume_mode = "must" if args.wandb_run_id is not None else None
 
     tags = list(args.wandb_tags) if args.wandb_tags else []
-    tags.append("revised-deepbeat")
+    tags.append(args.model)
 
     run = wandb.init(
         project=args.wandb_project,
@@ -451,7 +455,11 @@ def main():
             if saved_drops != 'default':
                 tuned_dropouts = saved_drops
 
-    model = revised_DeepBeatModel(dropouts=tuned_dropouts).to(device)
+    print(f"Model architecture: {args.model}")
+    if args.model == 'deepbeat':
+        model = DeepBeatModel(dropouts=tuned_dropouts).to(device)
+    else:
+        model = revised_DeepBeatModel(dropouts=tuned_dropouts).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
     # ---- LR Scheduler ----
@@ -649,7 +657,7 @@ def main():
         model_artifact = wandb.Artifact(
             name=f"{args.file_name}-model",
             type="model",
-            description="Best revised DeepBeat checkpoint",
+            description=f"Best {args.model} checkpoint",
             metadata={
                 'best_epoch':            best_epoch,
                 f'best_val_{monitor_metric}': best_metric_val,
