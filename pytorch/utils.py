@@ -99,26 +99,30 @@ def calculate_auprc(logits, targets):
     return auprc
     
 
-def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0):
+def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0,
+                 rhythm_class_weights=None):
     """
     Args:
         qa_logits: Raw outputs from model (N, 3)
         rhythm_logits: Raw outputs from model (N, 2)
         targets: Dictionary containing 'qa_label' (0/1/2) and 'rhythm_label' (0/1) as class indices
+        rhythm_class_weights: Optional 1D tensor of shape (2,) for class-weighted rhythm loss
     """
     qa_target = targets['qa_label'].to(device)
     rhythm_target = targets['rhythm_label'].to(device)
 
+    rh_weight = rhythm_class_weights.to(device) if rhythm_class_weights is not None else None
     qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target)
-    rhythm_loss = nn.CrossEntropyLoss()(rhythm_logits, rhythm_target)
+    rhythm_loss = nn.CrossEntropyLoss(weight=rh_weight)(rhythm_logits, rhythm_target)
 
     total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss
 
     return total_loss, qa_loss, rhythm_loss
 
 
-def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight, 
-                       is_training=True, f1_average='macro', progress_bar=False):
+def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight,
+                       is_training=True, f1_average='macro', progress_bar=False, grad_clip=1.0,
+                       rhythm_class_weights=None):
     model.train() if is_training else model.eval()
     desc_str = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
     
@@ -142,21 +146,17 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             qa_logits, rhythm_logits = model(data)
             
             loss, qa_loss, rhythm_loss = compute_loss(
-                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight
+                qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight,
+                rhythm_class_weights=rhythm_class_weights,
             )
             
             if is_training:
                 loss.backward()
-                
-                # Track the norm without clipping
-                # Setting max_norm to float('inf') means the gradients are never scaled for monitoring
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), 
-                    max_norm= float('inf')
-                )
+                max_norm = grad_clip if grad_clip > 0 else float('inf')
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
                 total_grad_norm += grad_norm.item()
                 optimizer.step()
-            
+
             running_loss += loss.item()
             running_qa_loss += qa_loss.item()
             running_rhythm_loss += rhythm_loss.item()
@@ -441,12 +441,12 @@ def apply_tuned_params(args):
     
 # --- checkpoint saving and loading
 
-def save_checkpoint(epoch, model, optimizer, val_metrics, history, args, 
-                   output_path, tuned_dropouts, early_stopper=None, 
-                   checkpoint_type='progress'):
+def save_checkpoint(epoch, model, optimizer, val_metrics, history, args,
+                   output_path, tuned_dropouts, early_stopper=None,
+                   checkpoint_type='progress', scheduler=None):
     """
     Save a comprehensive training checkpoint
-    
+
     Args:
         checkpoint_type: 'progress' for regular saves, 'best' for best model, 'final' for end
     """
@@ -466,7 +466,7 @@ def save_checkpoint(epoch, model, optimizer, val_metrics, history, args,
         },
         'args': vars(args),  # Save all arguments for full reproducibility
     }
-    
+
     # Save early stopping state if it exists
     if early_stopper is not None:
         checkpoint['early_stopping_state'] = {
@@ -477,6 +477,9 @@ def save_checkpoint(epoch, model, optimizer, val_metrics, history, args,
             'min_delta': early_stopper.min_delta,
             'mode': early_stopper.mode
         }
+
+    if scheduler is not None:
+        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
     
     filename = f"{args.file_name}_{checkpoint_type}.pth"
     checkpoint_path = output_path / filename
@@ -484,7 +487,7 @@ def save_checkpoint(epoch, model, optimizer, val_metrics, history, args,
     torch.save(checkpoint, checkpoint_path)
     return checkpoint_path
 
-def load_checkpoint(checkpoint_path, model, optimizer=None, device='cpu'):
+def load_checkpoint(checkpoint_path, model, optimizer=None, device='cpu', scheduler=None):
     """
     Load a training checkpoint
     
@@ -500,6 +503,10 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, device='cpu'):
     # Load optimizer state if optimizer provided
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    # Load scheduler state if scheduler provided
+    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
     print(f"✓ Checkpoint loaded successfully")
     print(f"  - Resumed from epoch: {checkpoint['epoch']}")
