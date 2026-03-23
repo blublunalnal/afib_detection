@@ -6,3 +6,4 @@ scipy
 tqdm
 scikit-learn
 tensorboard
+wandb

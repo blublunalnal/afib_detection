@@ -31,16 +31,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train revised DeepBeat model with W&B logging")
 
     # Data
-    parser.add_argument("--orig_data_path",             default=r'C:\Users\aoara\develop\deepbeat\data\original_data')
+    parser.add_argument("--train_data_path",             default=r'C:\Users\aoara\develop\deepbeat\data\ori_train.pkl')
     parser.add_argument("--val_data_path",               default=r'C:\Users\aoara\develop\deepbeat\data\ori_val.pkl')
-    parser.add_argument("--db_orig_replaced_path",       default=None)
-    parser.add_argument("--db_orig_replaced_vsm_path",   default=None)
     parser.add_argument("--output_path",                 default=r'C:\Users\aoara\develop\deepbeat\training_output')
 
     # Experiment
     parser.add_argument("--file_name",        required=True, help="Run name used for file/folder names")
-    valid_choices = ['db_orig', 'db_orig_replaced', 'db_orig_replaced_vsm']
-    parser.add_argument("--training_choice",  choices=valid_choices, required=True)
 
     # Tuned params
     parser.add_argument("--tuned_params_path", type=str, default=None,
@@ -89,23 +85,6 @@ def parse_args():
 
     return parser.parse_args()
 
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-
-def load_training_data(args):
-    print("=" * 60)
-    print(f"TRAINING CHOICE: {args.training_choice}")
-    print("=" * 60)
-
-    path_dict = {
-        'db_orig':              args.orig_data_path,
-        'db_orig_replaced':     args.db_orig_replaced_path,
-        'db_orig_replaced_vsm': args.db_orig_replaced_vsm_path,
-    }
-    data_to_load = load_pickle_file(path_dict[args.training_choice])
-    return data_to_load
 
 
 # ---------------------------------------------------------------------------
@@ -214,18 +193,34 @@ def main():
 
     # ---- Data ----
     print("Loading training data...")
-    train_dict = load_training_data(args)
+    train_dict = load_pickle_file(Path(args.train_data_path))
     data_train, label_train_r, label_train_q = (
-        train_dict['data'], train_dict['rhythm'], train_dict['qa_label']
+        train_dict['data'], train_dict['rhythm_label'], train_dict['qa_label']
     )
     print(f"Train shape: {data_train.shape}")
 
     print("Loading validation data...")
     val_dict = load_pickle_file(Path(args.val_data_path))
     data_val, label_val_r, label_val_q = (
-        val_dict['data'], val_dict['rhythm'], val_dict['qa_label']
+        val_dict['data'], val_dict['rhythm_label'], val_dict['qa_label']
     )
     print(f"Val shape: {data_val.shape}")
+
+    # ---- W&B data artifact ----
+    data_artifact = wandb.Artifact(
+        name=f"{args.file_name}-data",
+        type="dataset",
+        description="Train and validation pickle files",
+        metadata={
+            'train_path': args.train_data_path,
+            'val_path':   args.val_data_path,
+            'train_samples': len(data_train),
+            'val_samples':   len(data_val),
+        },
+    )
+    data_artifact.add_file(args.train_data_path, name="train.pkl")
+    data_artifact.add_file(args.val_data_path,   name="val.pkl")
+    wandb.log_artifact(data_artifact)
 
     train_dataset = DeepBeatDataset(data_train, label_train_q, label_train_r)
     val_dataset   = DeepBeatDataset(data_val,   label_val_q,   label_val_r)
