@@ -70,7 +70,7 @@ def parse_args():
 
     # Checkpointing
     parser.add_argument("--monitor_metric", type=str, default='rhythm_f1',
-                        choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1'])
+                        choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1', 'rhythm_auprc', 'rhythm_auroc'])
 
     # LR Scheduler
     parser.add_argument("--scheduler",        type=str, default='plateau',
@@ -88,7 +88,7 @@ def parse_args():
     parser.add_argument("--early_stopping_patience",   type=int,   default=15)
     parser.add_argument("--early_stopping_min_delta",  type=float, default=0.0001)
     parser.add_argument("--early_stopping_metric",     type=str,   default='rhythm_acc',
-                        choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1'])
+                        choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1', 'rhythm_auprc', 'rhythm_auroc'])
 
     # Resume
     parser.add_argument("--resume_from",  type=str, default=None, help="Checkpoint path to resume from")
@@ -158,8 +158,12 @@ def log_epoch_to_wandb(train_m: dict, val_m: dict, epoch: int, lr: float = None)
         "val/rhythm_acc":     val_m['rhythm_acc'],
         "val/qa_acc":         val_m['qa_acc'],
         "val/rhythm_f1":      val_m['rhythm_f1'],
-        "val/auroc":          val_m.get('auroc', 0.0),
-        "val/auprc":          val_m.get('auprc', 0.0),
+        "val/rhythm_auroc":          val_m.get('rhythm_auroc', 0.0),
+        "val/rhythm_auprc":          val_m.get('rhythm_auprc', 0.0),
+        "val/rhythm_f1_opt":         val_m.get('rhythm_f1_opt', 0.0),
+        "val/rhythm_acc_opt":        val_m.get('rhythm_acc_opt', 0.0),
+        "val/rhythm_precision_opt":  val_m.get('rhythm_precision_opt', 0.0),
+        "val/rhythm_recall_opt":     val_m.get('rhythm_recall_opt', 0.0),
     }
     if lr is not None:
         log_dict["train/lr"] = lr
@@ -348,6 +352,7 @@ def main():
     history = {
         'loss': [], 'val_loss': [],
         'val_rhythm_acc': [], 'val_qa_acc': [], 'val_rhythm_f1': [],
+        'val_rhythm_auprc': [], 'val_rhythm_auroc': [],
     }
 
     monitor_metric = args.monitor_metric
@@ -562,6 +567,8 @@ def main():
             history['val_rhythm_acc'].append(val_m['rhythm_acc'])
             history['val_qa_acc'].append(val_m['qa_acc'])
             history['val_rhythm_f1'].append(val_m['rhythm_f1'])
+            history['val_rhythm_auprc'].append(val_m.get('rhythm_auprc', 0.0))
+            history['val_rhythm_auroc'].append(val_m.get('rhythm_auroc', 0.0))
 
             print(
                 f"   -> Train Loss: {train_m['loss']:.4f} | "
@@ -573,8 +580,12 @@ def main():
                 f"   -> Val   Loss: {val_m['loss']:.4f} | "
                 f"Rh Acc: {val_m['rhythm_acc']:.4f} | "
                 f"Rh F1: {val_m['rhythm_f1']:.4f} | "
-                f"QA Acc: {val_m['qa_acc']:.4f} | "
-                f"AUROC: {val_m.get('auroc', 0):.4f}"
+                f"F1-Opt: {val_m.get('rhythm_f1_opt', 0):.4f} | "
+                f"Acc-Opt: {val_m.get('rhythm_acc_opt', 0):.4f} | "
+                f"Prec-Opt: {val_m.get('rhythm_precision_opt', 0):.4f} | "
+                f"Rec-Opt: {val_m.get('rhythm_recall_opt', 0):.4f} | "
+                f"AUPRC: {val_m.get('rhythm_auprc', 0):.4f} | "
+                f"AUROC: {val_m.get('rhythm_auroc', 0):.4f}"
             )
 
             # Early stopping check

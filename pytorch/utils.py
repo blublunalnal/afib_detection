@@ -21,7 +21,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from scipy.io import loadmat
-from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, average_precision_score
+from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, average_precision_score, precision_recall_curve
 import torch.nn.functional as F
 
 class DeepBeatDataset(Dataset):
@@ -98,6 +98,29 @@ def calculate_auprc(logits, targets):
     auprc = average_precision_score(targets, positive_probs)
     return auprc
     
+
+def calculate_opt_threshold_metrics(logits, targets):
+    """Return accuracy, precision, recall, f1 at the threshold that maximises F1."""
+    if isinstance(logits, list):
+        if len(logits) == 0:
+            return {'rhythm_f1_opt': 0.0, 'rhythm_acc_opt': 0.0,
+                    'rhythm_precision_opt': 0.0, 'rhythm_recall_opt': 0.0}
+        logits = torch.cat(logits, dim=0)
+    probs = F.softmax(logits, dim=1)
+    positive_probs = probs[:, 1].detach().cpu().numpy()
+    targets = np.array(targets)
+    precision, recall, thresholds = precision_recall_curve(targets, positive_probs)
+    f1_scores = 2 * precision * recall / (precision + recall + 1e-8)
+    best_idx = f1_scores[:-1].argmax()
+    best_thresh = thresholds[best_idx]
+    preds = (positive_probs >= best_thresh).astype(int)
+    return {
+        'rhythm_f1_opt':        float(f1_scores[best_idx]),
+        'rhythm_acc_opt':       float(accuracy_score(targets, preds)),
+        'rhythm_precision_opt': float(precision[best_idx]),
+        'rhythm_recall_opt':    float(recall[best_idx]),
+    }
+
 
 def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0,
                  rhythm_class_weights=None):
@@ -187,8 +210,10 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
         'qa_acc': accuracy_score(all_qa_targets, all_qa_preds),
         'rhythm_acc': accuracy_score(all_rhythm_targets, all_rhythm_preds),
         'grad_norm': total_grad_norm / len(dataloader) if is_training else 0.0,
-        'auroc': calculate_auroc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0,
-        'auprc': calculate_auprc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0 
+        'rhythm_auroc': calculate_auroc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0,
+        'rhythm_auprc': calculate_auprc(all_rhythm_logits, all_rhythm_targets) if not is_training else 0.0,
+        **(calculate_opt_threshold_metrics(all_rhythm_logits, all_rhythm_targets) if not is_training else
+           {'rhythm_f1_opt': 0.0, 'rhythm_acc_opt': 0.0, 'rhythm_precision_opt': 0.0, 'rhythm_recall_opt': 0.0}),
     }
     
     return metrics
