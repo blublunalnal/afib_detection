@@ -428,10 +428,8 @@ def main():
         rhythm_class_weights = torch.FloatTensor(args.rhythm_class_weights)
         print(f"Using manual rhythm class weights: Normal={args.rhythm_class_weights[0]}, AFib={args.rhythm_class_weights[1]}")
     else:
-        counts = np.bincount(label_train_r)
-        weights = len(label_train_r) / (len(counts) * counts.astype(float))
-        rhythm_class_weights = torch.FloatTensor(weights)
-        print(f"Auto rhythm class weights from training data: {counts} → weights {weights.round(3)}")
+        rhythm_class_weights = None
+        print("No rhythm class weights applied.")
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
