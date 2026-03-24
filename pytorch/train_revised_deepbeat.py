@@ -18,6 +18,7 @@ from sklearn.metrics import (
     f1_score, accuracy_score,
     roc_auc_score, average_precision_score,
     classification_report, confusion_matrix,
+    precision_recall_curve,
 )
 import wandb
 from tqdm import tqdm
@@ -65,6 +66,8 @@ def parse_args():
     parser.add_argument("--rhythm_class_weights",  type=float, nargs=2, default=None,
                         metavar=('W_NORMAL', 'W_AFIB'),
                         help="Class weights for rhythm loss, e.g. --rhythm_class_weights 1.0 3.0")
+    parser.add_argument("--auto_class_weights", action='store_true',
+                        help="Compute rhythm class weights automatically from training label distribution")
     parser.add_argument("--grad_clip",             type=float, default=1.0,
                         help="Max gradient norm for clipping (default: 1.0, set 0 to disable)")
 
@@ -233,11 +236,44 @@ def run_evaluation(model, args, device, output_path):
     all_qa_targets     = np.array(all_qa_targets)
     all_qa_preds       = np.array(all_qa_preds)
 
-    # --- Rhythm report ---
-    print("\nRHYTHM CLASSIFICATION PERFORMANCE (AFib vs Normal)")
+    # --- Find optimal threshold from validation set ---
+    print(f"\nFinding optimal threshold from validation set: {args.val_data_path}")
+    val_dict_eval = load_pickle_file(Path(args.val_data_path))
+    val_dataset_eval = DeepBeatDataset(
+        val_dict_eval['data'], val_dict_eval['qa_label'], val_dict_eval['rhythm_label'],
+    )
+    val_loader_eval = DataLoader(
+        val_dataset_eval, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=(device.type == 'cuda'),
+        persistent_workers=(args.num_workers > 0),
+    )
+    val_probs_eval, val_targets_eval = [], []
+    with torch.no_grad():
+        for batch in tqdm(val_loader_eval, desc="Val inference (threshold)", ncols=120):
+            rh_logits = model(batch['data'].to(device))[1]
+            val_probs_eval.extend(F.softmax(rh_logits, dim=1)[:, 1].cpu().numpy())
+            val_targets_eval.extend(batch['rhythm_label'].numpy())
+    val_probs_eval   = np.array(val_probs_eval)
+    val_targets_eval = np.array(val_targets_eval)
+    precision_v, recall_v, thresholds_v = precision_recall_curve(val_targets_eval, val_probs_eval)
+    f1_v = 2 * precision_v * recall_v / (precision_v + recall_v + 1e-8)
+    opt_threshold = float(thresholds_v[f1_v[:-1].argmax()])
+    print(f"Optimal threshold (val F1-maximising): {opt_threshold:.4f}")
+
+    # Predictions at optimal threshold
+    all_rhythm_preds_opt = (all_rhythm_probs >= opt_threshold).astype(int)
+
+    # --- Rhythm report @ 0.5 ---
+    print("\nRHYTHM CLASSIFICATION PERFORMANCE @ threshold=0.5 (AFib vs Normal)")
     print(classification_report(all_rhythm_targets, all_rhythm_preds, target_names=['Normal', 'AFib']))
     print("Confusion Matrix (rows=true, cols=pred):")
     print(confusion_matrix(all_rhythm_targets, all_rhythm_preds))
+
+    # --- Rhythm report @ optimal threshold ---
+    print(f"\nRHYTHM CLASSIFICATION PERFORMANCE @ threshold={opt_threshold:.4f} (optimal from val)")
+    print(classification_report(all_rhythm_targets, all_rhythm_preds_opt, target_names=['Normal', 'AFib']))
+    print("Confusion Matrix (rows=true, cols=pred):")
+    print(confusion_matrix(all_rhythm_targets, all_rhythm_preds_opt))
 
     auroc = auprc = None
     try:
@@ -255,11 +291,12 @@ def run_evaluation(model, args, device, output_path):
     # --- Save predictions CSV ---
     results_csv = output_path / "test_predictions.csv"
     preds_db = pd.DataFrame({
-        'rh_true':   all_rhythm_targets,
-        'rh_pred':   all_rhythm_preds,
-        'afib_prob': all_rhythm_probs,
-        'qa_true':   all_qa_targets,
-        'qa_pred':   all_qa_preds,
+        'rh_true':       all_rhythm_targets,
+        'rh_pred':       all_rhythm_preds,
+        'rh_pred_opt':   all_rhythm_preds_opt,
+        'afib_prob':     all_rhythm_probs,
+        'qa_true':       all_qa_targets,
+        'qa_pred':       all_qa_preds,
     })
     if 'ID' in test_dict:
         preds_db['ID'] = test_dict['ID']
@@ -299,18 +336,26 @@ def run_evaluation(model, args, device, output_path):
         print(f"WARNING: DeepBeat stratified metrics failed: {e}")
 
     # --- Log to W&B ---
-    rhythm_f1  = f1_score(all_rhythm_targets, all_rhythm_preds, average='macro', zero_division=0)
-    rhythm_acc = accuracy_score(all_rhythm_targets, all_rhythm_preds)
-    qa_acc     = accuracy_score(all_qa_targets, all_qa_preds)
+    rhythm_f1      = f1_score(all_rhythm_targets, all_rhythm_preds,     average='binary', zero_division=0)
+    rhythm_f1_opt  = f1_score(all_rhythm_targets, all_rhythm_preds_opt, average='binary', zero_division=0)
+    rhythm_acc     = accuracy_score(all_rhythm_targets, all_rhythm_preds)
+    rhythm_acc_opt = accuracy_score(all_rhythm_targets, all_rhythm_preds_opt)
+    qa_acc         = accuracy_score(all_qa_targets, all_qa_preds)
 
     test_log = {
-        "Test/rhythm_f1":  rhythm_f1,
-        "Test/rhythm_acc": rhythm_acc,
-        "Test/qa_acc":     qa_acc,
+        "Test/rhythm_f1":      rhythm_f1,
+        "Test/rhythm_f1_opt":  rhythm_f1_opt,
+        "Test/rhythm_acc":     rhythm_acc,
+        "Test/rhythm_acc_opt": rhythm_acc_opt,
+        "Test/opt_threshold":  opt_threshold,
+        "Test/qa_acc":         qa_acc,
     }
-    wandb.summary["test_rhythm_f1"]  = rhythm_f1
-    wandb.summary["test_rhythm_acc"] = rhythm_acc
-    wandb.summary["test_qa_acc"]     = qa_acc
+    wandb.summary["test_rhythm_f1"]      = rhythm_f1
+    wandb.summary["test_rhythm_f1_opt"]  = rhythm_f1_opt
+    wandb.summary["test_rhythm_acc"]     = rhythm_acc
+    wandb.summary["test_rhythm_acc_opt"] = rhythm_acc_opt
+    wandb.summary["test_opt_threshold"]  = opt_threshold
+    wandb.summary["test_qa_acc"]         = qa_acc
     if auroc is not None:
         test_log["Test/AUROC"] = auroc
         test_log["Test/AUPRC"] = auprc
@@ -431,7 +476,15 @@ def main():
     # ---- Rhythm class weights ----
     if args.rhythm_class_weights is not None:
         rhythm_class_weights = torch.FloatTensor(args.rhythm_class_weights)
-        print(f"Using manual rhythm class weights: Normal={args.rhythm_class_weights[0]}, AFib={args.rhythm_class_weights[1]}")
+        print(f"Using manual rhythm class weights: Normal={args.rhythm_class_weights[0]:.4f}, AFib={args.rhythm_class_weights[1]:.4f}")
+    elif args.auto_class_weights:
+        counts = np.bincount(label_train_r)
+        n_samples = len(label_train_r)
+        n_classes = len(counts)
+        weights = n_samples / (n_classes * counts.astype(float))
+        rhythm_class_weights = torch.FloatTensor(weights)
+        print(f"Auto rhythm class weights: Normal={weights[0]:.4f}, AFib={weights[1]:.4f} "
+              f"(counts: Normal={counts[0]}, AFib={counts[1]})")
     else:
         rhythm_class_weights = None
         print("No rhythm class weights applied.")
