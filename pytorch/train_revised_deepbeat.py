@@ -71,6 +71,16 @@ def parse_args():
     parser.add_argument("--grad_clip",             type=float, default=1.0,
                         help="Max gradient norm for clipping (default: 1.0, set 0 to disable)")
 
+    # Focal loss
+    parser.add_argument("--use_focal_rhythm", action='store_true',
+                        help="Use focal loss for the rhythm branch instead of cross-entropy")
+    parser.add_argument("--focal_gamma_rhythm", type=float, default=2.0,
+                        help="Focusing gamma for rhythm focal loss (default: 2.0)")
+    parser.add_argument("--use_focal_qa", action='store_true',
+                        help="Use focal loss for the QA branch instead of cross-entropy")
+    parser.add_argument("--focal_gamma_qa", type=float, default=2.0,
+                        help="Focusing gamma for QA focal loss (default: 2.0)")
+
     # Checkpointing
     parser.add_argument("--monitor_metric", type=str, default='rhythm_f1',
                         choices=['rhythm_acc', 'qa_acc', 'loss', 'rhythm_f1', 'rhythm_auprc', 'rhythm_auroc'])
@@ -432,6 +442,10 @@ def main():
         'lr_min':                  args.lr_min,
         'grad_clip':               args.grad_clip,
         'rhythm_class_weights':    args.rhythm_class_weights,
+        'use_focal_rhythm':        args.use_focal_rhythm,
+        'focal_gamma_rhythm':      args.focal_gamma_rhythm,
+        'use_focal_qa':            args.use_focal_qa,
+        'focal_gamma_qa':          args.focal_gamma_qa,
     }
     history['hyperparameters'] = hyperparams
     print(hyperparams)
@@ -597,12 +611,16 @@ def main():
                 args.qa_loss_weight, args.rhythm_loss_weight,
                 is_training=True, progress_bar=True, grad_clip=args.grad_clip,
                 rhythm_class_weights=rhythm_class_weights,
+                use_focal_rhythm=args.use_focal_rhythm, focal_gamma_rhythm=args.focal_gamma_rhythm,
+                use_focal_qa=args.use_focal_qa,         focal_gamma_qa=args.focal_gamma_qa,
             )
             val_m = run_epoch(
                 model, val_loader, optimizer, device, epoch,
                 args.qa_loss_weight, args.rhythm_loss_weight,
                 is_training=False, progress_bar=True,
                 rhythm_class_weights=rhythm_class_weights,
+                use_focal_rhythm=args.use_focal_rhythm, focal_gamma_rhythm=args.focal_gamma_rhythm,
+                use_focal_qa=args.use_focal_qa,         focal_gamma_qa=args.focal_gamma_qa,
             )
 
             # Step LR scheduler
