@@ -8,7 +8,7 @@ class revised_DeepBeatModel(nn.Module):
         if dropouts is None:
             dropouts = {
                 'do57': 0.118, 'do58': 0.545, 'do59': 0.568,
-                'do60': 0.672, 'do61': 0.374, 'do62': 0.414, 'do63': 0.017,
+                'do60': 0.3, 'do61': 0.374, 'do62': 0.414, 'do63': 0.017,
             }
         
         # revised to follow standard structure
@@ -57,7 +57,7 @@ class revised_DeepBeatModel(nn.Module):
         self.conv1d_87 = nn.Conv1d(64, 25, kernel_size=4, stride=2, padding=1)
         self.bn69 = nn.BatchNorm1d(25)
         self.do60 = nn.Dropout(dropouts['do60'])
-        self.qa_conv_1 = nn.Sequential(self.conv1d_87, self.bn69, nn.ReLU(), self.do60)
+        self.qa_conv_1 = nn.Sequential(self.conv1d_87, nn.ReLU(), self.bn69, self.do60)
 
         self.dense17 = nn.Linear(75, 175)
         self.qa_out = nn.Linear(175, 3)
