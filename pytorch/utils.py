@@ -122,21 +122,73 @@ def calculate_opt_threshold_metrics(logits, targets):
     }
 
 
+class FocalLoss(nn.Module):
+    """Multi-class focal loss.
+
+    Reduces the relative loss for well-classified examples, focusing training
+    on hard/misclassified samples.
+
+    FL(p_t) = -(1 - p_t)^gamma * log(p_t)
+
+    Args:
+        gamma: Focusing parameter (0 = standard cross-entropy).
+        weight: Per-class weight tensor, same semantics as nn.CrossEntropyLoss.
+        reduction: 'mean' | 'sum' | 'none'.
+    """
+
+    def __init__(self, gamma: float = 2.0, weight=None, reduction: str = 'mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.weight = weight
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        log_probs = F.log_softmax(logits, dim=1)                          # (N, C)
+        pt = torch.exp(log_probs).gather(1, targets.unsqueeze(1)).squeeze(1)  # (N,)
+        log_pt = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)         # (N,)
+
+        loss = -(1.0 - pt) ** self.gamma * log_pt                         # (N,)
+
+        if self.weight is not None:
+            w = self.weight.to(logits.device)[targets]
+            loss = loss * w
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        if self.reduction == 'sum':
+            return loss.sum()
+        return loss
+
+
 def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhythm_weight=5.0,
-                 rhythm_class_weights=None):
+                 rhythm_class_weights=None,
+                 use_focal_rhythm=False, focal_gamma_rhythm=2.0,
+                 use_focal_qa=False,     focal_gamma_qa=2.0):
     """
     Args:
         qa_logits: Raw outputs from model (N, 3)
         rhythm_logits: Raw outputs from model (N, 2)
         targets: Dictionary containing 'qa_label' (0/1/2) and 'rhythm_label' (0/1) as class indices
         rhythm_class_weights: Optional 1D tensor of shape (2,) for class-weighted rhythm loss
+        use_focal_rhythm: Use focal loss for the rhythm branch
+        focal_gamma_rhythm: Focusing gamma for rhythm focal loss
+        use_focal_qa: Use focal loss for the QA branch
+        focal_gamma_qa: Focusing gamma for QA focal loss
     """
     qa_target = targets['qa_label'].to(device)
     rhythm_target = targets['rhythm_label'].to(device)
 
     rh_weight = rhythm_class_weights.to(device) if rhythm_class_weights is not None else None
-    qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target)
-    rhythm_loss = nn.CrossEntropyLoss(weight=rh_weight)(rhythm_logits, rhythm_target)
+
+    if use_focal_qa:
+        qa_loss = FocalLoss(gamma=focal_gamma_qa)(qa_logits, qa_target)
+    else:
+        qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target)
+
+    if use_focal_rhythm:
+        rhythm_loss = FocalLoss(gamma=focal_gamma_rhythm, weight=rh_weight)(rhythm_logits, rhythm_target)
+    else:
+        rhythm_loss = nn.CrossEntropyLoss(weight=rh_weight)(rhythm_logits, rhythm_target)
 
     total_loss = qa_weight * qa_loss + rhythm_weight * rhythm_loss
 
@@ -145,7 +197,9 @@ def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhyth
 
 def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_weight,
                        is_training=True, f1_average='binary', progress_bar=False, grad_clip=1.0,
-                       rhythm_class_weights=None):
+                       rhythm_class_weights=None,
+                       use_focal_rhythm=False, focal_gamma_rhythm=2.0,
+                       use_focal_qa=False,     focal_gamma_qa=2.0):
     model.train() if is_training else model.eval()
     desc_str = f"Epoch {epoch} [{'TRAIN' if is_training else 'VAL'}]"
     
@@ -171,6 +225,8 @@ def run_epoch(model, dataloader, optimizer, device, epoch, qa_weight, rhythm_wei
             loss, qa_loss, rhythm_loss = compute_loss(
                 qa_logits, rhythm_logits, batch, device, qa_weight, rhythm_weight,
                 rhythm_class_weights=rhythm_class_weights,
+                use_focal_rhythm=use_focal_rhythm, focal_gamma_rhythm=focal_gamma_rhythm,
+                use_focal_qa=use_focal_qa,         focal_gamma_qa=focal_gamma_qa,
             )
             
             if is_training:
