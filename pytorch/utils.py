@@ -128,18 +128,19 @@ class FocalLoss(nn.Module):
     Reduces the relative loss for well-classified examples, focusing training
     on hard/misclassified samples.
 
-    FL(p_t) = -(1 - p_t)^gamma * log(p_t)
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
 
     Args:
         gamma: Focusing parameter (0 = standard cross-entropy).
-        weight: Per-class weight tensor, same semantics as nn.CrossEntropyLoss.
+        alpha: Per-class weight tensor for class balancing (the alpha_t term).
+               Same semantics as nn.CrossEntropyLoss weight. If None, no alpha applied.
         reduction: 'mean' | 'sum' | 'none'.
     """
 
-    def __init__(self, gamma: float = 2.0, weight=None, reduction: str = 'mean'):
+    def __init__(self, gamma: float = 2.0, alpha=None, reduction: str = 'mean'):
         super().__init__()
         self.gamma = gamma
-        self.weight = weight
+        self.alpha = alpha
         self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
@@ -149,9 +150,9 @@ class FocalLoss(nn.Module):
 
         loss = -(1.0 - pt) ** self.gamma * log_pt                         # (N,)
 
-        if self.weight is not None:
-            w = self.weight.to(logits.device)[targets]
-            loss = loss * w
+        if self.alpha is not None:
+            alpha_t = self.alpha.to(logits.device)[targets]
+            loss = alpha_t * loss
 
         if self.reduction == 'mean':
             return loss.mean()
@@ -186,7 +187,7 @@ def compute_loss(qa_logits, rhythm_logits, targets, device, qa_weight=0.2, rhyth
         qa_loss = nn.CrossEntropyLoss()(qa_logits, qa_target)
 
     if use_focal_rhythm:
-        rhythm_loss = FocalLoss(gamma=focal_gamma_rhythm, weight=rh_weight)(rhythm_logits, rhythm_target)
+        rhythm_loss = FocalLoss(gamma=focal_gamma_rhythm, alpha=rh_weight)(rhythm_logits, rhythm_target)
     else:
         rhythm_loss = nn.CrossEntropyLoss(weight=rh_weight)(rhythm_logits, rhythm_target)
 
