@@ -243,6 +243,13 @@ def main():
             val_rhythm_probs, val_rhythm_targets, val_qa_preds, level
         )
 
+    # ---- Save thresholds JSON (for deployment) ----
+    import json
+    thresholds_json = output_path / f"{file_name}_per_qa_thresholds.json"
+    with open(thresholds_json, 'w') as f:
+        json.dump({str(k): v for k, v in thresholds_per_level.items()}, f, indent=2)
+    print(f"Per-QA thresholds saved to: {thresholds_json}")
+
     # ---- Test inference ----
     print(f"\nLoading test data: {args.test_data_path}")
     test_dict = load_pickle_file(Path(args.test_data_path))
