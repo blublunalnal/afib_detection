@@ -16,7 +16,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'pytorch'))
 
 from revised_deepbeat_model import revised_DeepBeatModel
-from deepbeat_model import DeepBeatModel
 from utils import load_pickle_file, get_optimal_workers
 
 
@@ -47,7 +46,8 @@ def parse_args():
     parser.add_argument("--checkpoint_path",
                         default=str(Path(__file__).resolve().parent / "revised_deepbeat_diff_branch_2_best.pth"),
                         help="Path to the .pth checkpoint file")
-    parser.add_argument("--thresholds_path",  required=True,
+    parser.add_argument("--thresholds_path",  
+                        default=str(Path(__file__).resolve().parent / "model_thresholds.json"),
                         help="Path to the per_qa_thresholds.json produced by evaluate_per_qa_level.py")
     parser.add_argument("--data_path",        required=True,
                         help="Path to the input pickle file")
@@ -58,7 +58,7 @@ def parse_args():
                         help="Directory for output CSV (defaults to checkpoint directory)")
     parser.add_argument("--file_name",        type=str, default=None,
                         help="Base name for output files (defaults to checkpoint stem)")
-    parser.add_argument("--batch_size",       type=int, default=128)
+    parser.add_argument("--batch_size",       type=int, default=256)
     parser.add_argument("--device",           type=str,
                         default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument("--num_workers",      type=int, default=None)
