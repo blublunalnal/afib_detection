@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument("--checkpoint_path",
                         default=str(here / "revised_deepbeat_diff_branch_2_best.pth"),
                         help="Path to the .pth checkpoint file")
-    parser.add_argument("--thresholds_path",  default= str(here / "model_thresholds.json")
+    parser.add_argument("--thresholds_path",  default= str(here / "model_thresholds.json"),
                         help="Path to *_per_qa_thresholds.json from evaluate_per_qa_level.py")
     parser.add_argument("--private",          action="store_true",
                         help="Create the Hub repo as private")
