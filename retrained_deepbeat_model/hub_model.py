@@ -63,7 +63,7 @@ class DeepBeatHubModel(revised_DeepBeatModel, PyTorchModelHubMixin):
     def predict(
         self,
         signals: np.ndarray,
-        batch_size: int = 128,
+        batch_size: int = 256,
         device: str = None,
     ) -> dict:
         """
@@ -76,10 +76,9 @@ class DeepBeatHubModel(revised_DeepBeatModel, PyTorchModelHubMixin):
 
         Returns:
             dict with keys:
-                afib_prob        – AFib probability per sample (N,)
-                afib_pred_per_qa – binary AFib prediction using per-QA thresholds (N,)
-                afib_pred_default– binary AFib prediction at threshold=0.5 (N,)
-                qa_pred          – predicted QA level 0/1/2 (N,)
+                afib_prob  – AFib probability per sample (N,)
+                afib_pred  – binary AFib prediction using per-QA thresholds (N,)
+                qa_pred    – predicted QA level 0/1/2 (N,)
         """
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -88,31 +87,22 @@ class DeepBeatHubModel(revised_DeepBeatModel, PyTorchModelHubMixin):
         # (N, 800, 1) → (N, 1, 800)
         x = torch.FloatTensor(signals).permute(0, 2, 1)
 
-        all_probs, all_rh_preds, all_qa_preds = [], [], []
+        all_probs, all_qa_preds = [], []
 
         for i in range(0, len(x), batch_size):
             batch = x[i: i + batch_size].to(device)
             qa_logits, rh_logits = self(batch)
 
-            probs   = F.softmax(rh_logits, dim=1)[:, 1].cpu().numpy()
-            rh_pred = torch.argmax(rh_logits, dim=1).cpu().numpy()
-            qa_pred = torch.argmax(qa_logits, dim=1).cpu().numpy()
-
-            all_probs.extend(probs)
-            all_rh_preds.extend(rh_pred)
-            all_qa_preds.extend(qa_pred)
+            all_probs.extend(F.softmax(rh_logits, dim=1)[:, 1].cpu().numpy())
+            all_qa_preds.extend(torch.argmax(qa_logits, dim=1).cpu().numpy())
 
         probs   = np.array(all_probs)
-        rh_pred = np.array(all_rh_preds)
         qa_pred = np.array(all_qa_preds)
 
-        per_qa_pred = self._apply_thresholds(probs, qa_pred)
-
         return {
-            'afib_prob':         probs,
-            'afib_pred_per_qa':  per_qa_pred,
-            'afib_pred_default': rh_pred,
-            'qa_pred':           qa_pred,
+            'afib_prob': probs,
+            'afib_pred': self._apply_thresholds(probs, qa_pred),
+            'qa_pred':   qa_pred,
         }
 
     def _apply_thresholds(self, probs: np.ndarray, qa_preds: np.ndarray) -> np.ndarray:
