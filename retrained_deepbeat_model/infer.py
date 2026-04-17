@@ -16,7 +16,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'pytorch'))
 
 from revised_deepbeat_model import revised_DeepBeatModel
-from deepbeat_model import DeepBeatModel
 from utils import load_pickle_file, get_optimal_workers
 
 
@@ -47,7 +46,8 @@ def parse_args():
     parser.add_argument("--checkpoint_path",
                         default=str(Path(__file__).resolve().parent / "revised_deepbeat_diff_branch_2_best.pth"),
                         help="Path to the .pth checkpoint file")
-    parser.add_argument("--thresholds_path",  required=True,
+    parser.add_argument("--thresholds_path",  
+                        default=str(Path(__file__).resolve().parent / "model_thresholds.json"),
                         help="Path to the per_qa_thresholds.json produced by evaluate_per_qa_level.py")
     parser.add_argument("--data_path",        required=True,
                         help="Path to the input pickle file")
@@ -58,7 +58,7 @@ def parse_args():
                         help="Directory for output CSV (defaults to checkpoint directory)")
     parser.add_argument("--file_name",        type=str, default=None,
                         help="Base name for output files (defaults to checkpoint stem)")
-    parser.add_argument("--batch_size",       type=int, default=128)
+    parser.add_argument("--batch_size",       type=int, default=256)
     parser.add_argument("--device",           type=str,
                         default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument("--num_workers",      type=int, default=None)
@@ -70,22 +70,17 @@ def build_model(model_name, dropouts, device):
 
 
 def run_inference(model, loader, device):
-    rhythm_probs, rhythm_preds, qa_preds = [], [], []
+    rhythm_probs, qa_preds = [], []
 
     with torch.no_grad():
         for batch in tqdm(loader, desc="Inferring", ncols=120):
             data = batch['data'].to(device)
             qa_logits, rhythm_logits = model(data)
 
-            probs    = F.softmax(rhythm_logits, dim=1)[:, 1].cpu().numpy()
-            rh_pred  = torch.argmax(rhythm_logits, dim=1).cpu().numpy()
-            qa_pred  = torch.argmax(qa_logits,     dim=1).cpu().numpy()
+            rhythm_probs.extend(F.softmax(rhythm_logits, dim=1)[:, 1].cpu().numpy())
+            qa_preds.extend(torch.argmax(qa_logits, dim=1).cpu().numpy())
 
-            rhythm_probs.extend(probs)
-            rhythm_preds.extend(rh_pred)
-            qa_preds.extend(qa_pred)
-
-    return np.array(rhythm_probs), np.array(rhythm_preds), np.array(qa_preds)
+    return np.array(rhythm_probs), np.array(qa_preds)
 
 
 def apply_per_qa_thresholds(probs, qa_preds, thresholds):
@@ -162,15 +157,14 @@ def main():
     )
 
     # ---- Inference ----
-    rhythm_probs, rhythm_preds_default, qa_preds = run_inference(model, loader, device)
-    rhythm_preds_per_qa = apply_per_qa_thresholds(rhythm_probs, qa_preds, thresholds)
+    rhythm_probs, qa_preds = run_inference(model, loader, device)
+    afib_pred = apply_per_qa_thresholds(rhythm_probs, qa_preds, thresholds)
 
     # ---- Build output DataFrame ----
     out = pd.DataFrame({
-        'afib_prob':        rhythm_probs,
-        'afib_pred_default': rhythm_preds_default,   # argmax (threshold=0.5)
-        'afib_pred_per_qa':  rhythm_preds_per_qa,    # per-QA thresholds
-        'qa_pred':           qa_preds,
+        'afib_prob': rhythm_probs,
+        'afib_pred': afib_pred,
+        'qa_pred':   qa_preds,
     })
     if 'ID' in data_dict:
         out.insert(0, 'ID', data_dict['ID'])
@@ -186,16 +180,10 @@ def main():
     if has_labels:
         from sklearn.metrics import classification_report, roc_auc_score, average_precision_score
 
-        print("\n" + "=" * 60)
-        print("RHYTHM CLASSIFICATION @ threshold=0.5 (argmax)")
-        print(classification_report(rhythm_labels, rhythm_preds_default,
-                                    target_names=['Normal', 'AFib']))
-
-        print(f"RHYTHM CLASSIFICATION @ per-QA thresholds")
         thr_str = "  |  ".join([f"QA{k}={v:.4f}" for k, v in thresholds.items()])
-        print(f"  Thresholds: {thr_str}")
-        print(classification_report(rhythm_labels, rhythm_preds_per_qa,
-                                    target_names=['Normal', 'AFib']))
+        print(f"\n{'='*60}")
+        print(f"RHYTHM CLASSIFICATION @ per-QA thresholds ({thr_str})")
+        print(classification_report(rhythm_labels, afib_pred, target_names=['Normal', 'AFib']))
         try:
             auroc = roc_auc_score(rhythm_labels, rhythm_probs)
             auprc = average_precision_score(rhythm_labels, rhythm_probs)
