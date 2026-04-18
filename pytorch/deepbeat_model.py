@@ -93,56 +93,9 @@ class DeepBeatModel(nn.Module):
         rhythm_out = self.rhythm_out(rh) 
         return qa_out, rhythm_out
  
-    def check_forward_shape(self,x):
-        """ print out output shape at each stage
 
-        Args:
-            x (array): size (Batch, 1, 800)
-         
-        """
-        
-        # Backbone
-        x = self.max_pool25(F.relu(self.conv1d_81(x)))
-        print(f"After Block 1 (Conv81 + Pool25): {x.shape}")
-        x = self.max_pool26(F.relu(self.conv1d_82(x)))
-        print(f"After Block 2 (Conv82 + Pool26): {x.shape}")
-        x = self.max_pool27(F.relu(self.conv1d_83(x)))
-        print(f"After Block 3 (Conv83 + Pool27): {x.shape}")
-        x = self.bn65(x)
-    
-        # Shared processing
-        x = self.do57(self.bn66(self.lrelu(self.conv1d_84(x))))
-        print(f"After Bottleneck 1 (Conv84): {x.shape}")
-        x = self.do58(self.bn67(self.lrelu(self.conv1d_85(x))))
-        print(f"After Bottleneck 2 (Conv85): {x.shape}")
-        shared_feat = self.do59(self.bn68(self.lrelu(self.conv1d_86(x))))
-        print(f"Shared Features (Conv86): {shared_feat.shape}")
 
-        # QA Branch
-        qa = self.do60(self.bn69(F.relu(self.conv1d_87(shared_feat))))
-        print(f"QA Branch - After Conv87: {qa.shape}")
-        qa = torch.flatten(qa, 1)
-        print(f"QA Branch - Flattened: {qa.shape}")
-        qa = F.relu(self.dense17(qa))
-        print(f"QA Branch - Dense: {qa.shape}")
-        qa_out = self.qa_out(qa) # raw logits
-        print(f"QA Final Output: {qa_out.shape}")
-    
-        # Rhythm Branch
-        rh = self.do61(self.bn70(F.relu(self.conv1d_88(shared_feat))))
-        print(f"Rhythm Branch - After Conv88: {rh.shape}")
-        rh = self.do62(self.bn71(F.relu(self.conv1d_89(rh))))
-        print(f"Rhythm Branch - After Conv89: {rh.shape}")
-        rh = self.do63(self.bn72(F.relu(self.conv1d_90(rh))))
-        print(f"Rhythm Branch - After Conv90: {rh.shape}")
-        rh = torch.flatten(rh, 1)
-        print(f"Rhythm Branch - Flattened: {rh.shape}")
-        rh = F.relu(self.dense18(rh))
-        print(f"Rhythm Branch - Dense: {rh.shape}")
-        rhythm_out = self.rhythm_out(rh) 
-        print(f"Rhythm Final Output: {rhythm_out.shape}")
-        
-        
+# the following models are created for experimentation purposes       
 
 class rhythm_only_deepbeat(nn.Module):
     def __init__(self, dropouts=None):
@@ -306,31 +259,7 @@ class balanced_DeepBeatModel(nn.Module):
     
 
     
-def test_model():
-    """Test the model with a sample input"""
-    model = DeepBeatModel()
-    
-    # Test with sample input
-    batch_size = 4
-    seq_len = 800
-    x = torch.randn(batch_size, 1, seq_len)
-    
-    print("Input shape:", x.shape)
-    
-    qa_out, rhythm_out = model(x)
-    
-    print("QA Output shape:", qa_out)
-    print("Rhythm Output shape:", rhythm_out)
-    
-    # Count parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    print(f"\nTotal parameters: {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,}")
-    
-    # print output in each layer
-    model.check_forward_shape(x)
+
     
 
 
