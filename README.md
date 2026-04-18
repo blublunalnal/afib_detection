@@ -12,28 +12,22 @@ This repository contains two independent projects for detecting atrial fibrillat
 ```
 afib_detection/
 ├── data_inspection.ipynb           # Data cleaning pipeline (deduplication, relabeling)
+├── requirements.txt
 ├── pytorch/                        # DeepBeat (original + revised) model code
 │   ├── deepbeat_model.py           # PyTorch port of the original DeepBeat architecture
 │   ├── revised_deepbeat_model.py   # Structurally improved DeepBeat variant
 │   ├── train_pytorch_model.py      # Training script for the original DeepBeat model
 │   ├── train_revised_deepbeat.py   # Training script for the revised model (W&B integrated)
 │   ├── benchmark_deepbeat.py       # Stratified evaluation metrics (by QA level)
-│   ├── evaluate_checkpoint.py      # Evaluate a saved checkpoint on a test set
-│   ├── evaluate_model.py           # General model evaluation utilities
 │   ├── evaluate_per_qa_level.py    # Per-QA-level performance breakdown
-│   ├── params_tuning_f1.py         # Bayesian hyperparameter tuning (maximize F1, via Optuna)
-│   ├── params_tuning_acc.py        # Bayesian hyperparameter tuning (maximize accuracy)
-│   ├── infer.py                    # Inference script
 │   ├── utils.py                    # Dataset, training loop, checkpointing utilities
-│   ├── model_thresholds.json       # Optimal decision thresholds from validation set
 │   ├── inspect_model.ipynb         # Layer-by-layer inspection and TF/PyTorch comparison
-│   └── requirements.txt
 ├── retrained_deepbeat_model/       # Trained artifacts for the revised DeepBeat
+│   ├── infer.py                    # Inference script
 │   ├── revised_deepbeat_diff_branch_2_best.pth   # Best checkpoint
 │   └── model_thresholds.json       # Thresholds calibrated on validation data
 ├── fine_tuning/                    # PPG foundation model fine-tuning project
 │   ├── fine_tuning_models.py       # FineTuning_rhythm and FineTuning_multitask model classes
-│   ├── train_finetune.py           # Fine-tuning training script
 │   ├── train_finetune_wandb.py     # Fine-tuning with W&B experiment tracking
 │   ├── evaluate_fine_tune.py       # Evaluation for fine-tuned models
 │   ├── params_tuning_finetune.py   # Hyperparameter search for fine-tuning
@@ -43,9 +37,6 @@ afib_detection/
 │   ├── ResNet1D_Net.py             # ResNet1D backbone (PulsePPG architecture)
 │   ├── anyppg_ckpt.pth             # Pre-trained AnyPPG weights
 │   ├── plot_auroc.py               # AUROC curve plotting
-│   └── requirements.txt
-└── mimic-iii/                      # MIMIC-III data download guide
-    └── download_guide.md
 ```
 
 ---
@@ -118,7 +109,17 @@ Key training features:
 
 ### Pretrained checkpoint
 
-The best checkpoint is stored in `retrained_deepbeat_model/revised_deepbeat_diff_branch_2_best.pth`.
+The trained model is published on Hugging Face: **[llan00/revised_deepbeat](https://huggingface.co/llan00/revised_deepbeat)**
+
+The `retrained_deepbeat_model/` folder contains everything needed for local use:
+
+| File | Description |
+|---|---|
+| `revised_deepbeat_diff_branch_2_best.pth` | Best model checkpoint |
+| `model_thresholds.json` | Per-QA-level decision thresholds calibrated on the validation set |
+| `infer.py` | Inference script |
+
+To load the checkpoint directly:
 
 ```python
 import torch
@@ -192,15 +193,12 @@ python fine_tuning/params_tuning_finetune.py
 
 ## Data
 
-The models are trained on the DeepBeat dataset. `data_inspection.ipynb` walks through the data cleaning steps applied before training. MIMIC-III data (used for additional validation) can be obtained following `mimic-iii/download_guide.md`.
-
+The models are trained on the DeepBeat dataset. `data_inspection.ipynb` walks through the data cleaning steps applied before training. 
 ---
 
 ## Dependencies
 
 ```bash
-pip install -r pytorch/requirements.txt       # for DeepBeat experiments
-pip install -r fine_tuning/requirements.txt   # for fine-tuning experiments
+pip install -r requirements.txt    
 ```
-
 Core dependencies: `torch`, `numpy`, `pandas`, `scikit-learn`, `optuna`, `wandb`, `scipy`, `tqdm`
