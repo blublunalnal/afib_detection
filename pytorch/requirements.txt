@@ -1,9 +1,0 @@
-torch
-optuna
-numpy
-pandas
-scipy
-tqdm
-scikit-learn
-tensorboard
-wandb
