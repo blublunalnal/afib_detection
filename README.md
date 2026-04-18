@@ -69,14 +69,14 @@ The QA branch's conv block intentionally retains the original ordering (Conv →
 
 Metrics are stratified by QA level (0 = low, 1 = medium, 2 = high quality).
 
-| QA Level | Model | Threshold | TPR | TNR | PPV | F1 |
-|---|---|---|---|---|---|---|
-| 0 | Original DeepBeat | — | 0.640 | 0.780 | 0.530 | 0.580 |
-| 0 | **Revised DeepBeat** | 0.605 | 0.472 | 0.841 | 0.540 | 0.503 |
-| 1 | Original DeepBeat | — | 0.930 | 0.980 | 0.870 | 0.900 |
-| 1 | **Revised DeepBeat** | 0.667 | 0.944 | 0.985 | 0.924 | **0.934** |
-| 2 | Original DeepBeat | — | 0.980 | 0.990 | 0.940 | 0.960 |
-| 2 | **Revised DeepBeat** | 0.732 | 0.992 | 0.997 | 0.980 | **0.986** |
+| QA Level | Model | TPR | TNR | PPV | F1 |
+|---|---|---|---|---|---|
+| 0 | Original DeepBeat | 0.640 | 0.780 | 0.530 | 0.580 |
+| 0 | **Revised DeepBeat** | 0.472 | 0.841 | 0.540 | 0.503 |
+| 1 | Original DeepBeat | 0.930 | 0.980 | 0.870 | 0.900 |
+| 1 | **Revised DeepBeat** | 0.944 | 0.985 | 0.924 | **0.934** |
+| 2 | Original DeepBeat | 0.980 | 0.990 | 0.940 | 0.960 |
+| 2 | **Revised DeepBeat** | 0.992 | 0.997 | 0.980 | **0.986** |
 
 At QA level 0 (low-quality signals), the revised model trades sensitivity for higher specificity; both models perform poorly in this regime and low-quality segments are typically excluded in practice. At QA 1 and QA 2, the revised model outperforms the original despite having no pretrained encoder.
 
