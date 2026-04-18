@@ -45,13 +45,13 @@ afib_detection/
 
 ### Background
 
-[DeepBeat](https://www.nature.com/articles/s41746-020-0306-7) is a multi-task 1D CNN that jointly classifies PPG signal quality (QA: low / medium / high) and cardiac rhythm (Normal vs. AFib) from 25-second PPG windows sampled at 32 Hz.
+[DeepBeat](https://www.nature.com/articles/s41746-020-00320-4) is a multi-task CNN that jointly classifies PPG signal quality (QA: poor / acceptable / good) and cardiac rhythm (Normal vs. AFib) from 25-second PPG windows sampled at 32 Hz.
 
 ### What changed
 
 **Data:** The original DeepBeat training data contained duplicate segments with conflicting labels and outdated annotations. `data_inspection.ipynb` documents the full cleaning pipeline: duplicate removal, label conflict resolution, and augmentation with re-labeled samples.
 
-**Architecture (`revised_deepbeat_model.py`):** The revised model follows the standard Conv → BN → Activation → Pooling → Dropout block ordering throughout the backbone, whereas the original (`deepbeat_model.py`) applies batch norm *after* pooling and uses an inconsistent ordering in some blocks. The encoder part of the original model also omits batch norm entirely. Both models share the same dual-branch output structure (QA head + rhythm head), backbone channel sizes, and number of layers.
+**Architecture (`revised_deepbeat_model.py`):** The revised model follows the standard Conv → BN → Activation → Pooling → Dropout block ordering throughout the backbone, whereas the original (`deepbeat_model.py`) applies batch norm *after* pooling. The encoder part of the original model also omits batch norm entirely. Both models share the same dual-branch output structure (QA head + rhythm head), backbone channel sizes, and number of layers.
 
 The QA branch's conv block intentionally retains the original ordering (Conv → ReLU → Pool → BN), as it empirically yields better QA prediction.
 
@@ -192,8 +192,8 @@ python fine_tuning/params_tuning_finetune.py
 ---
 
 ## Data
-
-The models are trained on the DeepBeat dataset. `data_inspection.ipynb` walks through the data cleaning steps applied before training. 
+ The models are trained on the DeepBeat dataset. `data_inspection.ipynb` walks through the data cleaning steps applied before training. 
+ 
 ---
 
 ## Dependencies
