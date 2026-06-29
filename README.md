@@ -65,20 +65,25 @@ The QA branch's conv block intentionally retains the original ordering (Conv →
 
 ### Performance
 
-> **Key result:** The revised model matches or exceeds the original DeepBeat at medium and high signal quality (QA 1–2) **without any autoencoder pretraining** — the original DeepBeat encoder was initialized from a self-supervised autoencoder, while the revised model is trained from scratch on cleaned data alone.
+> **Key result:** The revised model dramatically improves PPV over the original DeepBeat architecture **without pretraining** — PPV rises from 0.37 → 0.54 at QA 0 (+46%) and from 0.48 → 0.92 at QA 1 (+92%). These gains are relative to the original DeepBeat trained from scratch (unpretrained); even against the pretrained original, PPV improves at every QA level.
 
 Metrics are stratified by QA level (0 = low, 1 = medium, 2 = high quality).
 
 | QA Level | Model | TPR | TNR | PPV | F1 |
 |---|---|---|---|---|---|
-| 0 | Original DeepBeat | 0.640 | 0.780 | 0.530 | 0.580 |
-| 0 | **Revised DeepBeat** | 0.472 | 0.841 | 0.540 | 0.503 |
-| 1 | Original DeepBeat | 0.930 | 0.980 | 0.870 | 0.900 |
-| 1 | **Revised DeepBeat** | 0.944 | 0.985 | 0.924 | **0.934** |
-| 2 | Original DeepBeat | 0.980 | 0.990 | 0.940 | 0.960 |
-| 2 | **Revised DeepBeat** | 0.992 | 0.997 | 0.980 | **0.986** |
+| 0 | Original DeepBeat (unpretrained) | 0.290 | 0.800 | 0.370 | 0.330 |
+| 0 | Original DeepBeat (pretrained) | 0.640 | 0.780 | 0.530 | 0.580 |
+| 0 | **Revised DeepBeat** | 0.472 | 0.841 | **0.540** | 0.503 |
+| 1 | Original DeepBeat (unpretrained) | 0.860 | 0.830 | 0.480 | 0.620 |
+| 1 | Original DeepBeat (pretrained) | 0.930 | 0.980 | 0.870 | 0.900 |
+| 1 | **Revised DeepBeat** | 0.944 | 0.985 | **0.924** | **0.934** |
+| 2 | Original DeepBeat (unpretrained) | 0.980 | 0.880 | 0.560 | 0.720 |
+| 2 | Original DeepBeat (pretrained) | 0.980 | 0.990 | 0.940 | 0.960 |
+| 2 | **Revised DeepBeat** | 0.992 | 0.997 | **0.980** | **0.986** |
 
-At QA level 0 (low-quality signals), the revised model trades sensitivity for higher specificity; both models perform poorly in this regime and low-quality segments are typically excluded in practice. At QA 1 and QA 2, the revised model outperforms the original despite having no pretrained encoder.
+The most striking gains are in PPV for low-to-medium quality signals. At QA 0 and QA 1 — where the unpretrained original suffers from a large number of false positives — the revised model closes the gap and then surpasses even the pretrained original. This is particularly meaningful because low-quality signals are common in real-world wearable data, and high PPV reduces false AFib alarms.
+
+At QA 0, the revised model trades some sensitivity for higher specificity and PPV; absolute F1 remains modest since this is an inherently noisy regime. At QA 1 and QA 2, the revised model outperforms both baselines across all reported metrics.
 
 
 ### Training
